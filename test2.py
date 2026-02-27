@@ -3,32 +3,33 @@ import shutil
 import threading
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
+from PIL import Image
 
 
 class FileSearcherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # إعدادات النافذة الأساسية
+        # 1. طول البرنامج 750 (مقصوص من تحت)
         self.title("File Searcher Pro - Turbo Mode")
-        self.geometry("650x880")
+        self.geometry("650x750")
         ctk.set_appearance_mode("dark")
 
-        # --- حل مشكلة الأيقونة في لينكس وويندوز ---
+        # تحسين جودة الأيقونة
         try:
-            # السطر ده مش هيعمل Error في لينكس خلاص
             if os.path.exists('my_icon.ico'):
-                self.after(200, lambda: self.iconbitmap('my_icon.ico'))
+                pil_image = Image.open('my_icon.ico')
+                ctk_icon = ctk.CTkImage(light_image=pil_image, dark_image=pil_image, size=(64, 64))
+                self.after(200, lambda: self.wm_iconphoto(True, ctk_icon))
         except Exception:
             pass
 
-        # 1. تعريف المتغيرات أولاً (عشان نرضي PyCharm)
         self.list_names_path = ctk.StringVar()
         self.search_folder_path = ctk.StringVar()
         self.destination_folder_path = ctk.StringVar()
         self.extension_filter = ctk.StringVar(value=".jpg, .jpeg, .pdf, .tif, .tiff, .png")
 
-        # 2. بناء واجهة المستخدم مباشرة هنا
+        # --- الواجهة ---
         self.create_section_label("Path Configuration")
 
         for var, label, cmd in [
@@ -41,54 +42,58 @@ class FileSearcherApp(ctk.CTk):
             ctk.CTkButton(frame, text=label, command=cmd, width=100).pack(side="left")
 
         self.create_section_label("Search & Filter Options")
-        filter_frame = self.create_row_frame()
-        ctk.CTkLabel(filter_frame, text="Extensions:").pack(side="left", padx=5)
-        ctk.CTkEntry(filter_frame, textvariable=self.extension_filter, width=250).pack(side="left", padx=5)
 
-        self.case_sensitive = ctk.CTkCheckBox(filter_frame, text="Case Sensitive")
-        self.case_sensitive.pack(side="left", padx=10)
-
+        # إبعاد الاختيارات عن بعضها (pady=5) لتقليل الزحمة
         self.organize_by_customer = ctk.CTkCheckBox(self, text="Organize in Customer Folders")
-        self.organize_by_customer.pack(anchor="w", padx=30, pady=5)
+        self.organize_by_customer.pack(anchor="w", padx=30, pady=6)
 
         self.move_files = ctk.CTkCheckBox(self, text="Move Files (Default: Copy)")
-        self.move_files.pack(anchor="w", padx=30, pady=5)
+        self.move_files.pack(anchor="w", padx=30, pady=6)
 
+        # Exact Match غير مفعل افتراضياً
         self.exact_match = ctk.CTkCheckBox(self, text="Exact Filename Match")
-        self.exact_match.select()
-        self.exact_match.pack(anchor="w", padx=30, pady=5)
+        self.exact_match.pack(anchor="w", padx=30, pady=6)
 
         self.include_subfolders = ctk.CTkCheckBox(self, text="Search in Subfolders")
         self.include_subfolders.select()
-        self.include_subfolders.pack(anchor="w", padx=30, pady=5)
+        self.include_subfolders.pack(anchor="w", padx=30, pady=6)
 
+        filter_frame = self.create_row_frame()
+        ctk.CTkLabel(filter_frame, text="Extensions:").pack(side="left", padx=5)
+        ctk.CTkEntry(filter_frame, textvariable=self.extension_filter, width=220).pack(side="left", padx=5)
+        self.case_sensitive = ctk.CTkCheckBox(filter_frame, text="Case Sensitive")
+        self.case_sensitive.pack(side="left", padx=10)
+
+        # زر التشغيل
         btn_frame = self.create_row_frame()
         self.start_btn = ctk.CTkButton(btn_frame, text="START TURBO SEARCH", fg_color="#2b719e",
-                                       hover_color="#1a4d6d", command=self.start_thread, height=40,
+                                       hover_color="#1a4d6d", command=self.start_thread, height=45,
                                        font=("Arial", 14, "bold"))
-        self.start_btn.pack(pady=10, fill="x", padx=10)
+        self.start_btn.pack(pady=15, fill="x", padx=10)
 
         self.status_label = ctk.CTkLabel(self, text="Status: Ready", anchor="w")
         self.status_label.pack(fill="x", padx=30)
 
         self.progress = ctk.CTkProgressBar(self, width=550)
         self.progress.set(0)
-        self.progress.pack(pady=10)
+        self.progress.pack(pady=5)
 
-        self.log_area = ctk.CTkTextbox(self, width=580, height=200, font=("Consolas", 12))
-        self.log_area.pack(pady=10, padx=20)
+        # تصغير صندوق اللوج لتقليل المساحة تحت
+        self.log_area = ctk.CTkTextbox(self, width=580, height=140, font=("Consolas", 12))
+        self.log_area.pack(pady=5, padx=20)
 
-        ctk.CTkLabel(self, text="Made by Tamer Ismail", font=("Arial", 11, "italic"), text_color="#7f8c8d").pack(
-            side="bottom", pady=10)
+        # توقيع تامر إسماعيل (كبير وواضح)
+        footer_label = ctk.CTkLabel(self, text="Made by Tamer Ismail", font=("Arial", 15, "bold", "italic"),
+                                    text_color="#7f8c8d")
+        footer_label.pack(side="bottom", pady=15)
 
-    # --- الدوال المساعدة ---
     def create_section_label(self, text):
         ctk.CTkLabel(self, text=text, font=("Arial", 13, "bold"), text_color="#5dade2").pack(anchor="w", padx=25,
-                                                                                             pady=(15, 2))
+                                                                                             pady=(15, 5))
 
     def create_row_frame(self):
         frame = ctk.CTkFrame(self, fg_color="transparent")
-        frame.pack(fill="x", padx=20, pady=5)
+        frame.pack(fill="x", padx=20, pady=3)
         return frame
 
     def log(self, message):
