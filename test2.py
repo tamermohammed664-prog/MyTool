@@ -1,6 +1,7 @@
 import os
 import shutil
 import threading
+from datetime import datetime
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
@@ -9,89 +10,82 @@ class FileSearcherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # إعدادات النافذة (حجم Compact ومنظم)
+        # إعدادات النافذة (Compact & Clean)
         self.title("File Searcher Pro - Turbo Mode")
-        self.geometry("620x760")
+        self.geometry("620x730")
         ctk.set_appearance_mode("dark")
         self.configure(fg_color="#1a1a1a")
 
-        # حل مشكلة الأيقونة لتجنب أخطاء PhotoImage
         try:
             if os.path.exists('my_icon.ico'):
                 self.after(200, lambda: self.iconbitmap('my_icon.ico'))
-        except:
+        except Exception:
             pass
 
-        # تعريف المتغيرات بـ self لتجنب أخطاء Unresolved Reference
+        # تعريف المتغيرات بـ self لإصلاح أخطاء PyCharm
         self.list_names_path = ctk.StringVar()
         self.search_folder_path = ctk.StringVar()
         self.destination_folder_path = ctk.StringVar()
         self.extension_filter = ctk.StringVar(value=".jpg, .jpeg, .pdf, .tif, .tiff, .png")
 
         # --- واجهة المستخدم ---
-        self.create_section_label("Path Configuration").pack(anchor="w", padx=25, pady=(15, 5))
+        self.create_section_label("Path Configuration").pack(anchor="w", padx=25, pady=(12, 5))
 
-        # خانات المسارات بتباعد 10 وحجم خط 12
         for var, label, cmd in [
             (self.list_names_path, "Names List", self.browse_names_list),
             (self.search_folder_path, "Search Path", self.browse_search_folder),
             (self.destination_folder_path, "Dest Path", self.browse_dest_folder)
         ]:
             frame = ctk.CTkFrame(self, fg_color="transparent")
-            frame.pack(fill="x", padx=20, pady=10)
-            ctk.CTkEntry(frame, textvariable=var, width=400, height=28, fg_color="#333333", font=("Arial", 12)).pack(
-                side="left", padx=5)
-            ctk.CTkButton(frame, text=label, command=cmd, width=90, height=28, fg_color="#2b719e",
-                          font=("Arial", 11, "bold")).pack(side="left")
+            frame.pack(fill="x", padx=20, pady=6)
+            ctk.CTkEntry(frame, textvariable=var, width=400, height=28, fg_color="#333333").pack(side="left", padx=5)
+            ctk.CTkButton(frame, text=label, command=cmd, width=90, height=28, fg_color="#2b719e").pack(side="left")
 
-        self.create_section_label("Search & Filter Options").pack(anchor="w", padx=25, pady=(10, 5))
+        self.create_section_label("Search & Filter Options").pack(anchor="w", padx=25, pady=(8, 4))
 
-        # الـ Checkboxes معرفة بـ self لإصلاح أخطاء PyCharm
-        self.organize_by_customer = ctk.CTkCheckBox(self, text="Organize in Customer Folders", font=("Arial", 12))
-        self.organize_by_customer.pack(anchor="w", padx=35, pady=3)
+        self.organize_by_customer = ctk.CTkCheckBox(self, text="Organize in Customer Folders", font=("Arial", 11))
+        self.organize_by_customer.pack(anchor="w", padx=35, pady=2)
 
-        self.move_files = ctk.CTkCheckBox(self, text="Move Files (Default: Copy)", font=("Arial", 12))
-        self.move_files.pack(anchor="w", padx=35, pady=3)
+        self.move_files = ctk.CTkCheckBox(self, text="Move Files (Default: Copy)", font=("Arial", 11))
+        self.move_files.pack(anchor="w", padx=35, pady=2)
 
-        self.exact_match = ctk.CTkCheckBox(self, text="Exact Filename Match", font=("Arial", 12))
-        self.exact_match.pack(anchor="w", padx=35, pady=3)
+        self.exact_match = ctk.CTkCheckBox(self, text="Exact Filename Match", font=("Arial", 11))
+        self.exact_match.pack(anchor="w", padx=35, pady=2)
 
-        self.include_subfolders = ctk.CTkCheckBox(self, text="Search in Subfolders", font=("Arial", 12))
+        self.include_subfolders = ctk.CTkCheckBox(self, text="Search in Subfolders", font=("Arial", 11))
         self.include_subfolders.select()
-        self.include_subfolders.pack(anchor="w", padx=35, pady=3)
+        self.include_subfolders.pack(anchor="w", padx=35, pady=2)
 
-        # سطر التنسيقات
         ext_frame = ctk.CTkFrame(self, fg_color="transparent")
-        ext_frame.pack(fill="x", padx=25, pady=10)
-        ctk.CTkLabel(ext_frame, text="Extensions:", font=("Arial", 12)).pack(side="left", padx=5)
-        ctk.CTkEntry(ext_frame, textvariable=self.extension_filter, width=200, height=25, fg_color="#333333",
-                     font=("Arial", 11)).pack(side="left", padx=5)
-        self.case_sensitive = ctk.CTkCheckBox(ext_frame, text="Case Sensitive", font=("Arial", 11))
+        ext_frame.pack(fill="x", padx=25, pady=8)
+        ctk.CTkLabel(ext_frame, text="Extensions:", font=("Arial", 11)).pack(side="left", padx=5)
+        ctk.CTkEntry(ext_frame, textvariable=self.extension_filter, width=180, height=25, fg_color="#333333").pack(
+            side="left", padx=5)
+        self.case_sensitive = ctk.CTkCheckBox(ext_frame, text="Case Sensitive", font=("Arial", 10))
         self.case_sensitive.pack(side="left", padx=10)
 
-        # زر التشغيل
         self.start_btn = ctk.CTkButton(self, text="START TURBO SEARCH", fg_color="#2b719e",
-                                       height=40, font=("Arial", 14, "bold"), command=self.start_thread)
-        self.start_btn.pack(pady=15, fill="x", padx=40)
+                                       height=38, font=("Arial", 13, "bold"), command=self.start_thread)
+        self.start_btn.pack(pady=10, fill="x", padx=40)
 
-        # شريط الحالة
-        self.status_label = ctk.CTkLabel(self, text="Status: Ready", anchor="w", font=("Arial", 11))
+        self.status_label = ctk.CTkLabel(self, text="Status: Ready", anchor="w", font=("Arial", 10))
         self.status_label.pack(fill="x", padx=45)
 
         self.progress = ctk.CTkProgressBar(self, width=540, height=8, progress_color="#2b719e")
         self.progress.set(0)
-        self.progress.pack(pady=5)
+        self.progress.pack(pady=4)
 
-        self.log_area = ctk.CTkTextbox(self, width=560, height=130, fg_color="#121212", font=("Consolas", 11))
+        self.log_area = ctk.CTkTextbox(self, width=560, height=110, fg_color="#121212", font=("Consolas", 10))
         self.log_area.pack(pady=5, padx=20)
 
-        # التوقيع النهائي المطلوب بوضوح
-        self.footer = ctk.CTkLabel(self, text="Created by Mr. Tamer Ismail", font=("Arial", 14, "bold", "italic"),
+        # التوقيع (تم تصغير الخط لـ 20 ليكون متناسقاً)
+        self.footer = ctk.CTkLabel(self, text="Created by Mr. Tamer Ismail",
+                                   font=("Monotype Corsiva", 20, "italic"),
                                    text_color="#5dade2")
-        self.footer.pack(side="bottom", pady=10, fill="x")
+        self.footer.pack(side="bottom", pady=10)
 
     def create_section_label(self, text):
-        return ctk.CTkLabel(self, text=text, font=("Arial", 13, "bold"), text_color="#5dade2")
+        return ctk.CTkLabel(self, text=text, font=("Arial", 12, "bold"), text_color="#5dade2")
 
     def log(self, message):
         self.log_area.insert("end", f"{message}\n")
@@ -137,7 +131,7 @@ class FileSearcherApp(ctk.CTk):
                 lines = [l.strip() for l in f if l.strip()]
 
             dest = self.destination_folder_path.get()
-            total, found, missing = len(lines), 0, 0
+            total, found, missing_list = len(lines), 0, []
 
             for i, line in enumerate(lines):
                 query, cust = [x.strip() for x in line.split(',', 1)] if (
@@ -163,11 +157,19 @@ class FileSearcherApp(ctk.CTk):
                     found += 1
                 else:
                     self.log(f"[MISS] {query}")
-                    missing += 1
+                    missing_list.append(query)
                 self.progress.set((i + 1) / total)
 
-            # النتيجة النهائية كما طلبت بالضبط (Found/Missing)
-            messagebox.showinfo("Search Complete", f"Found: {found}\nMissing: {missing}")
+            # إنشاء ملف المفقودات
+            if missing_list:
+                m_file = os.path.join(dest, f"Missing_Files_{datetime.now().strftime('%H%M%S')}.txt")
+                with open(m_file, 'w', encoding='utf-8') as mf:
+                    mf.write("\n".join(missing_list))
+                self.log(f"Missing list saved.")
+
+            # تعديل رسالة ملخص النتائج كما طلبت
+            summary_msg = f"Search completed!\n\nFiles found: {found}\nFiles not found: {len(missing_list)}\n\nCheck the results panel for details."
+            messagebox.showinfo("Search Completed", summary_msg)
 
         except Exception as e:
             self.log(f"ERROR: {e}")
