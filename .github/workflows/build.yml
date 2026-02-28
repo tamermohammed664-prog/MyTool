@@ -1,39 +1,31 @@
-name: Build Guaranteed Optimized Searcher
+name: Build Windows EXE
 
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v3
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v4
       with:
-        python-version: '3.12'
+        python-version: '3.10'
 
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install customtkinter pillow pyinstaller
+        pip install customtkinter Pillow pyinstaller
 
-    - name: Download UPX for Compression
+    - name: Build EXE with Icon
       run: |
-        invoke-webrequest https://github.com/upx/upx/releases/download/v4.2.2/upx-4.2.2-win64.zip -OutFile upx.zip
-        expand-archive upx.zip -DestinationPath .
-
-    - name: Build EXE with PyInstaller & UPX
-      run: |
-        pyinstaller --noconsole --onefile --collect-all customtkinter --icon=my_icon.ico --upx-dir=upx-4.2.2-win64 test2.py
+        pyinstaller --noconfirm --onefile --windowed --icon="my_icon.ico" --name "BatchRenamerPro" main.py
 
     - name: Upload Artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v3
       with:
-        name: Turbo-Searcher-Final
-        path: dist/test2.exe
+        name: Windows-Executable
+        path: dist/BatchRenamerPro.exe
