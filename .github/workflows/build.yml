@@ -1,4 +1,5 @@
-name: Build Windows EXE - Turbo V2
+name: Build Turbo File Searcher
+
 on:
   push:
     branches: [ "main" ]
@@ -7,28 +8,27 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
-    - uses: actions/checkout@v4
-    
+    - name: Checkout code
+      uses: actions/checkout@v4
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-        
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # ضفنا Pillow عشان جودة الأيقونة تبقى عالية
-        pip install customtkinter pyinstaller Pillow
-        
-    - name: Build EXE
+        pip install customtkinter pillow pyinstaller
+
+    - name: Build EXE with PyInstaller
       run: |
-        # التأكد من اسم ملف الكود test2.py واسم الأيقونة my_icon.ico
-        pyinstaller --noconsole --onefile --icon=my_icon.ico --collect-all customtkinter test2.py
-        
+        pyinstaller --noconsole --onefile --collect-all customtkinter --icon=my_icon.ico test2.py
+
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        # هنا التغيير اللي هيخليك ما تتلخبطش بين النسخ
-        name: Tamer-Searcher-Turbo-V2
-        path: dist/*.exe
+        name: File-Searcher-Turbo-V2
+        path: dist/test2.exe
