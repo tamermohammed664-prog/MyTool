@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Batch Renamer Pro
 
 on:
   push:
@@ -20,12 +20,12 @@ jobs:
       run: |
         pip install customtkinter Pillow pyinstaller
 
-    - name: Build EXE with Icon
+    - name: Create EXE with Icon
       run: |
-        pyinstaller --noconfirm --onefile --windowed --icon="my_icon.ico" --name "BatchRenamerPro" main.py
+        pyinstaller --noconfirm --onefile --windowed --icon="my_icon.ico" --name "BatchRenamerPro" script.py
 
-    - name: Upload Artifact
+    - name: Upload EXE Artifact
       uses: actions/upload-artifact@v3
       with:
-        name: Windows-Executable
+        name: Final-Windows-Tool
         path: dist/BatchRenamerPro.exe
