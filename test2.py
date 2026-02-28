@@ -1,7 +1,6 @@
 import os
 import shutil
 import threading
-from datetime import datetime
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
@@ -10,7 +9,6 @@ class FileSearcherApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # إعدادات النافذة (Compact & Clean)
         self.title("File Searcher Pro - Turbo Mode")
         self.geometry("620x730")
         ctk.set_appearance_mode("dark")
@@ -22,13 +20,11 @@ class FileSearcherApp(ctk.CTk):
         except Exception:
             pass
 
-        # تعريف المتغيرات بـ self لإصلاح أخطاء PyCharm
         self.list_names_path = ctk.StringVar()
         self.search_folder_path = ctk.StringVar()
         self.destination_folder_path = ctk.StringVar()
         self.extension_filter = ctk.StringVar(value=".jpg, .jpeg, .pdf, .tif, .tiff, .png")
 
-        # --- واجهة المستخدم ---
         self.create_section_label("Path Configuration").pack(anchor="w", padx=25, pady=(12, 5))
 
         for var, label, cmd in [
@@ -78,7 +74,6 @@ class FileSearcherApp(ctk.CTk):
         self.log_area = ctk.CTkTextbox(self, width=560, height=110, fg_color="#121212", font=("Consolas", 10))
         self.log_area.pack(pady=5, padx=20)
 
-        # التوقيع (تم تصغير الخط لـ 20 ليكون متناسقاً)
         self.footer = ctk.CTkLabel(self, text="Created by Mr. Tamer Ismail",
                                    font=("Monotype Corsiva", 20, "italic"),
                                    text_color="#5dade2")
@@ -128,12 +123,12 @@ class FileSearcherApp(ctk.CTk):
                         file_index[k].append(os.path.join(root, f))
 
             with open(self.list_names_path.get(), 'r', encoding='utf-8') as f:
-                lines = [l.strip() for l in f if l.strip()]
+                raw_lines = [l.strip() for l in f if l.strip()]
 
             dest = self.destination_folder_path.get()
-            total, found, missing_list = len(lines), 0, []
+            total, found, missing_list = len(raw_lines), 0, []
 
-            for i, line in enumerate(lines):
+            for i, line in enumerate(raw_lines):
                 query, cust = [x.strip() for x in line.split(',', 1)] if (
                             self.organize_by_customer.get() and ',' in line) else (line, None)
                 q_key = query.lower()
@@ -157,17 +152,15 @@ class FileSearcherApp(ctk.CTk):
                     found += 1
                 else:
                     self.log(f"[MISS] {query}")
-                    missing_list.append(query)
+                    missing_list.append(line)
                 self.progress.set((i + 1) / total)
 
-            # إنشاء ملف المفقودات
             if missing_list:
-                m_file = os.path.join(dest, f"Missing_Files_{datetime.now().strftime('%H%M%S')}.txt")
+                m_file = os.path.join(dest, "Missing_Files.txt")
                 with open(m_file, 'w', encoding='utf-8') as mf:
                     mf.write("\n".join(missing_list))
-                self.log(f"Missing list saved.")
+                self.log("Missing list saved to Missing_Files.txt")
 
-            # تعديل رسالة ملخص النتائج كما طلبت
             summary_msg = f"Search completed!\n\nFiles found: {found}\nFiles not found: {len(missing_list)}\n\nCheck the results panel for details."
             messagebox.showinfo("Search Completed", summary_msg)
 
