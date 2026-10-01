@@ -1,4 +1,5 @@
 easyocr
+torchvision
 pymupdf
 opencv-python
 numpy
