@@ -3,3 +3,4 @@ pymupdf
 opencv-python
 numpy
 customtkinter
+pyinstaller
