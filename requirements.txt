@@ -1,0 +1,5 @@
+easyocr
+pymupdf
+opencv-python
+numpy
+customtkinter
