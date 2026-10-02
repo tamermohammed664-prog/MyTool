@@ -1,10 +1,5 @@
---index-url https://download.pytorch.org/whl/cpu
-torch
-torchvision
-easyocr
-pymupdf
-opencv-python
-numpy
 customtkinter
+opencv-python-headless
+pymupdf
+pillow
 pyinstaller
-Pillow
