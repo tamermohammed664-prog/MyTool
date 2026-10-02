@@ -29,7 +29,7 @@ jobs:
     - name: Build Executable with PyInstaller
       run: |
         if (!(Test-Path ".smart_renamer_rois.json")) { "{}" | Out-File -Encoding utf8 .smart_renamer_rois.json }
-        pyinstaller --noconfirm --onefile --windowed --add-data ".smart_renamer_rois.json;." smart_renamer.py
+        pyinstaller --noconfirm --onefile --windowed --collect-all torch --collect-all torchvision --collect-all easyocr --copy-metadata torch --copy-metadata easyocr --add-data ".smart_renamer_rois.json;." smart_renamer.py
 
     - name: Upload Executable Artifact
       uses: actions/upload-artifact@v4
