@@ -21,6 +21,11 @@ FIELD_KEYWORDS = (
     ("رقمالفاتوره", "رقمالفاتورة", "الفاتوره", "الفاتورة"),
 )
 DOCUMENT_NUMBER_LENGTH = 8
+FIELD_ROIS = (
+    (0.25, 0.01, 0.72, 0.11),
+    (0.72, 0.19, 0.88, 0.29),
+    (0.62, 0.29, 0.98, 0.37),
+)
 
 
 class SmartRenamer(ctk.CTk):
@@ -314,51 +319,69 @@ class SmartRenamer(ctk.CTk):
 
         return tuple(numbers)
 
-    def read_page_numbers(self, image, focus_header=True):
+    def read_page_numbers(self, image):
         self.init_ocr()
-        full_image = image
-        height, width = image.shape[:2]
-        if focus_header and height > 1:
-            image = image[:max(1, round(height * 0.42)), :]
-            height, width = image.shape[:2]
-        scale = min(1.15, 1280 / max(height, width))
-        if scale != 1:
-            image = cv2.resize(
-                image,
-                (max(1, round(width * scale)), max(1, round(height * scale))),
+        image_height, image_width = image.shape[:2]
+        enhanced_rois = []
+
+        for left, top, right, bottom in FIELD_ROIS:
+            x1 = round(image_width * left)
+            y1 = round(image_height * top)
+            x2 = round(image_width * right)
+            y2 = round(image_height * bottom)
+            roi = image[y1:y2, x1:x2]
+            if roi.size == 0:
+                return ("UNKNOWN", "UNKNOWN", "UNKNOWN")
+
+            roi_height, roi_width = roi.shape[:2]
+            scale = min(3.0, 1280 / max(roi_height, roi_width))
+            roi = cv2.resize(
+                roi,
+                (max(1, round(roi_width * scale)), max(1, round(roi_height * scale))),
                 interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA,
             )
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            enhanced_rois.append(cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray))
 
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-        detections = self.reader.readtext(
-            enhanced,
+        canvas_height = max(roi.shape[0] for roi in enhanced_rois)
+        canvas_width = max(roi.shape[1] for roi in enhanced_rois)
+        batched_rois = []
+        offsets = []
+        for roi in enhanced_rois:
+            roi_height, roi_width = roi.shape[:2]
+            offset_x = (canvas_width - roi_width) // 2
+            offset_y = (canvas_height - roi_height) // 2
+            canvas = np.full((canvas_height, canvas_width), 255, dtype=np.uint8)
+            canvas[offset_y:offset_y + roi_height, offset_x:offset_x + roi_width] = roi
+            batched_rois.append(canvas)
+            offsets.append((offset_x, offset_y, roi_width, roi_height))
+
+        detections_by_roi = self.reader.readtext_batched(
+            batched_rois,
             detail=1,
             paragraph=False,
-            min_size=10,
+            min_size=8,
             canvas_size=1280,
             batch_size=4,
             workers=0,
         )
-        items = [
-            {
-                "text": text,
-                "box": (
-                    sum(point[0] for point in box) / len(box) / image.shape[1],
-                    sum(point[1] for point in box) / len(box) / image.shape[0],
-                ),
-                "confidence": confidence,
-            }
-            for box, text, confidence in detections
-        ]
-        numbers = self.match_field_numbers(items)
-        if focus_header and "UNKNOWN" in numbers:
-            full_page_numbers = self.read_page_numbers(full_image, focus_header=False)
-            numbers = tuple(
-                first if first != "UNKNOWN" else second
-                for first, second in zip(numbers, full_page_numbers)
-            )
-        return numbers
+        numbers = []
+        for field_index, (detections, offset) in enumerate(zip(detections_by_roi, offsets)):
+            offset_x, offset_y, roi_width, roi_height = offset
+            items = [
+                {
+                    "text": text,
+                    "box": (
+                        (sum(point[0] for point in box) / len(box) - offset_x) / roi_width,
+                        (sum(point[1] for point in box) / len(box) - offset_y) / roi_height,
+                    ),
+                    "confidence": confidence,
+                }
+                for box, text, confidence in detections
+            ]
+            numbers.append(self.match_field_numbers(items)[field_index])
+
+        return tuple(numbers)
 
     def get_target_numbers(self, image_np):
         if image_np is None or image_np.size == 0:
@@ -451,7 +474,7 @@ class SmartRenamer(ctk.CTk):
                         })
                         continue
 
-                    proposed_name = f"{numbers[2]}-{numbers[0]}-{numbers[1]}{ext}"
+                    proposed_name = f"{numbers[2]} - {numbers[0]} - {numbers[1]}{ext}"
                     destination_path, already_named = self.reserve_destination(
                         dest_folder, proposed_name, source_path, reserved_paths
                     )
