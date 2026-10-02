@@ -21,6 +21,7 @@ FIELD_KEYWORDS = (
     ("رقمالفاتوره", "رقمالفاتورة", "الفاتوره", "الفاتورة"),
 )
 DOCUMENT_NUMBER_LENGTH = 8
+FIELD_LABELS = ("إذن التسليم المسعّر", "أمر التوريد", "رقم الفاتورة")
 FIELD_ROIS = (
     (0.25, 0.01, 0.72, 0.11),
     (0.72, 0.19, 0.88, 0.29),
@@ -229,24 +230,14 @@ class SmartRenamer(ctk.CTk):
             normalized = self.normalize_ocr_text(item["text"])
             for digit_run in re.finditer(r"\d+", normalized):
                 run = digit_run.group()
-                if len(run) > DOCUMENT_NUMBER_LENGTH:
-                    spans = [
-                        (offset, run[offset:offset + DOCUMENT_NUMBER_LENGTH])
-                        for offset in range(0, len(run), DOCUMENT_NUMBER_LENGTH)
-                    ]
-                else:
-                    spans = [(0, run)]
-                for offset, digits in spans:
-                    if len(digits) < 5:
-                        continue
-                    candidates.append({
-                        "value": digits,
-                        "item_index": item_index,
-                        "start": digit_run.start() + offset,
-                        "end": digit_run.start() + offset + len(digits),
-                        "box": item["box"],
-                        "confidence": item["confidence"],
-                    })
+                candidates.append({
+                    "value": run,
+                    "item_index": item_index,
+                    "start": digit_run.start(),
+                    "end": digit_run.end(),
+                    "box": item["box"],
+                    "confidence": item["confidence"],
+                })
 
             for field_index, keywords in enumerate(FIELD_KEYWORDS):
                 positions = [normalized.find(keyword) for keyword in keywords if keyword in normalized]
@@ -322,7 +313,7 @@ class SmartRenamer(ctk.CTk):
     def read_page_numbers(self, image):
         self.init_ocr()
         image_height, image_width = image.shape[:2]
-        enhanced_rois = []
+        numbers = []
 
         for left, top, right, bottom in FIELD_ROIS:
             x1 = round(image_width * left)
@@ -331,57 +322,99 @@ class SmartRenamer(ctk.CTk):
             y2 = round(image_height * bottom)
             roi = image[y1:y2, x1:x2]
             if roi.size == 0:
-                return ("UNKNOWN", "UNKNOWN", "UNKNOWN")
+                numbers.append("UNKNOWN")
+                continue
 
             roi_height, roi_width = roi.shape[:2]
-            scale = min(3.0, 1280 / max(roi_height, roi_width))
+            scale = min(1.5, 640 / max(roi_height, roi_width))
             roi = cv2.resize(
                 roi,
                 (max(1, round(roi_width * scale)), max(1, round(roi_height * scale))),
                 interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA,
             )
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            enhanced_rois.append(cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray))
+            denoised = cv2.bilateralFilter(gray, d=5, sigmaColor=50, sigmaSpace=50)
+            enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(denoised)
+            min_dimension = min(enhanced.shape[:2])
+            block_size = min(31, min_dimension if min_dimension % 2 else min_dimension - 1)
+            if block_size >= 3:
+                ocr_image = cv2.adaptiveThreshold(
+                    enhanced,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY,
+                    block_size,
+                    7,
+                )
+            else:
+                _, ocr_image = cv2.threshold(
+                    enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )
+            detections = self.reader.readtext(
+                ocr_image,
+                detail=1,
+                paragraph=False,
+                min_size=5,
+                canvas_size=640,
+                batch_size=1,
+                workers=0,
+                allowlist="0123456789",
+                mag_ratio=1.5,
+                contrast_ths=0.05,
+                adjust_contrast=0.7,
+                text_threshold=0.5,
+                low_text=0.3,
+            )
 
-        canvas_height = max(roi.shape[0] for roi in enhanced_rois)
-        canvas_width = max(roi.shape[1] for roi in enhanced_rois)
-        batched_rois = []
-        offsets = []
-        for roi in enhanced_rois:
-            roi_height, roi_width = roi.shape[:2]
-            offset_x = (canvas_width - roi_width) // 2
-            offset_y = (canvas_height - roi_height) // 2
-            canvas = np.full((canvas_height, canvas_width), 255, dtype=np.uint8)
-            canvas[offset_y:offset_y + roi_height, offset_x:offset_x + roi_width] = roi
-            batched_rois.append(canvas)
-            offsets.append((offset_x, offset_y, roi_width, roi_height))
+            candidates = []
+            for _, text, confidence in detections:
+                normalized = text.translate(DIGIT_TRANSLATION)
+                for digit_run in re.findall(r"\d+", normalized):
+                    candidates.append((digit_run, confidence))
 
-        detections_by_roi = self.reader.readtext_batched(
-            batched_rois,
-            detail=1,
-            paragraph=False,
-            min_size=8,
-            canvas_size=1280,
-            batch_size=4,
-            workers=0,
-        )
-        numbers = []
-        for field_index, (detections, offset) in enumerate(zip(detections_by_roi, offsets)):
-            offset_x, offset_y, roi_width, roi_height = offset
-            items = [
-                {
-                    "text": text,
-                    "box": (
-                        (sum(point[0] for point in box) / len(box) - offset_x) / roi_width,
-                        (sum(point[1] for point in box) / len(box) - offset_y) / roi_height,
+            if candidates:
+                number, _ = max(
+                    candidates,
+                    key=lambda candidate: (
+                        len(candidate[0]) == DOCUMENT_NUMBER_LENGTH,
+                        -abs(len(candidate[0]) - DOCUMENT_NUMBER_LENGTH),
+                        candidate[1],
                     ),
-                    "confidence": confidence,
-                }
-                for box, text, confidence in detections
-            ]
-            numbers.append(self.match_field_numbers(items)[field_index])
+                )
+                numbers.append(number)
+            else:
+                numbers.append("UNKNOWN")
 
         return tuple(numbers)
+
+    def write_number_length_note(self, source_path, note_folder, numbers):
+        invalid_numbers = [
+            (label, number)
+            for label, number in zip(FIELD_LABELS, numbers)
+            if number.isdigit() and len(number) != DOCUMENT_NUMBER_LENGTH
+        ]
+        if not invalid_numbers:
+            return ""
+
+        filename = os.path.basename(source_path)
+        stem = os.path.splitext(filename)[0]
+        note_path = os.path.join(note_folder, f"{stem}_ocr_note.txt")
+        lines = [
+            f"الملف: {filename}",
+            "الأرقام المستخرجة:",
+        ]
+        lines.extend(
+            f"- {label}: {number if number != 'UNKNOWN' else 'غير موجود'}"
+            for label, number in zip(FIELD_LABELS, numbers)
+        )
+        lines.append("ملاحظات الأرقام التي لا تحتوي على 8 خانات:")
+        lines.extend(
+            f"- {label}: تم استخراج {len(number)} خانات ({number}) بدلًا من 8."
+            for label, number in invalid_numbers
+        )
+        with open(note_path, "w", encoding="utf-8") as note_file:
+            note_file.write("\n".join(lines) + "\n")
+        return note_path
 
     def get_target_numbers(self, image_np):
         if image_np is None or image_np.size == 0:
@@ -460,6 +493,12 @@ class SmartRenamer(ctk.CTk):
                     else:
                         numbers = self.get_target_numbers(cv2.imread(source_path))
 
+                    note_error = ""
+                    try:
+                        self.write_number_length_note(source_path, dest_folder, numbers)
+                    except OSError as ex:
+                        note_error = f"Note could not be written: {ex}"
+
                     if "UNKNOWN" in numbers:
                         missing = [
                             label
@@ -469,7 +508,8 @@ class SmartRenamer(ctk.CTk):
                         results.append({
                             "filename": filename,
                             "new_name": "-",
-                            "status": f"Not found: {', '.join(missing)}",
+                            "status": f"Not found: {', '.join(missing)}"
+                            + (f"; {note_error}" if note_error else ""),
                             "eligible": False,
                         })
                         continue
@@ -483,7 +523,9 @@ class SmartRenamer(ctk.CTk):
                         "source_path": source_path,
                         "destination_path": destination_path,
                         "new_name": os.path.basename(destination_path),
-                        "status": "Already named" if already_named else "Ready",
+                        "status": (
+                            "Already named" if already_named else "Ready"
+                        ) + (f"; {note_error}" if note_error else ""),
                         "eligible": not already_named,
                     })
                 except Exception as ex:
