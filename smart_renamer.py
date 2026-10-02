@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import cv2
 import queue
 import shutil
@@ -7,7 +8,9 @@ import threading
 import numpy as np
 import pymupdf as fitz
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk
 import easyocr
 
 ctk.set_appearance_mode("dark")
@@ -22,11 +25,21 @@ FIELD_KEYWORDS = (
 )
 DOCUMENT_NUMBER_LENGTH = 8
 FIELD_LABELS = ("إذن التسليم المسعّر", "أمر التوريد", "رقم الفاتورة")
-FIELD_ROIS = (
-    (0.25, 0.01, 0.72, 0.11),
-    (0.72, 0.19, 0.88, 0.29),
+FIELD_GUIDES = ("Delivery Permit Number", "Supply Order Number", "Invoice Number")
+DEFAULT_FIELD_ROIS = (
+    (0.32, 0.02, 0.60, 0.075),
+    (0.82, 0.245, 0.91, 0.28),
     (0.62, 0.29, 0.98, 0.37),
 )
+
+
+def aggregate_roi_samples(samples):
+    sample_array = np.asarray(samples, dtype=np.float64)
+    expected_shape = (len(FIELD_LABELS), 4)
+    if sample_array.ndim != 3 or sample_array.shape[0] == 0 or sample_array.shape[1:] != expected_shape:
+        raise ValueError("Each calibration sample must contain three valid ROIs.")
+    median_rois = np.median(sample_array, axis=0)
+    return tuple(tuple(float(value) for value in roi) for roi in median_rois)
 
 
 class SmartRenamer(ctk.CTk):
@@ -36,6 +49,8 @@ class SmartRenamer(ctk.CTk):
         self.title("SMART RENAMER")
         self.geometry("650x640")
         self.resizable(False, False)
+        self.roi_config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".smart_renamer_rois.json")
+        self.field_rois = self.load_roi_config()
 
         self.label = ctk.CTkLabel(self, text="SMART RENAMER", font=("Helvetica Neue", 28, "bold"))
         self.label.pack(pady=(25, 5))
@@ -62,6 +77,23 @@ class SmartRenamer(ctk.CTk):
             "Same as source (no overwrite)",
             btn_color="#27ae60",
         )
+
+        self.btn_calibrate = ctk.CTkButton(
+            self,
+            text="Teach Number Areas",
+            command=self.calibrate_field_rois,
+            width=220,
+            fg_color="#34495e",
+            hover_color="#415b73",
+        )
+        self.btn_calibrate.pack(pady=(8, 0))
+        self.lbl_calibration = ctk.CTkLabel(
+            self,
+            text="Saved number areas loaded" if self.field_rois != DEFAULT_FIELD_ROIS else "Default number areas",
+            font=("Helvetica", 11),
+            text_color="#95a5a6",
+        )
+        self.lbl_calibration.pack(pady=(3, 0))
 
         self.progress_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.progress_frame.pack(pady=(20, 0))
@@ -162,6 +194,231 @@ class SmartRenamer(ctk.CTk):
         if self.output_path:
             self.lbl_output.configure(text=f"Dst: {os.path.basename(self.output_path)}", text_color="#2ecc71")
 
+    def load_roi_config(self):
+        try:
+            with open(self.roi_config_path, encoding="utf-8") as config_file:
+                config = json.load(config_file)
+            rois = tuple(tuple(float(value) for value in roi) for roi in config["field_rois"])
+            if len(rois) != len(FIELD_LABELS) or any(
+                len(roi) != 4
+                or not (0 <= roi[0] < roi[2] <= 1 and 0 <= roi[1] < roi[3] <= 1)
+                for roi in rois
+            ):
+                raise ValueError("Invalid ROI profile")
+            return rois
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            return DEFAULT_FIELD_ROIS
+
+    def load_calibration_image(self, path):
+        if os.path.splitext(path)[1].lower() == ".pdf":
+            with fitz.open(path) as doc:
+                if len(doc) == 0:
+                    raise ValueError(f"The PDF has no pages: {os.path.basename(path)}")
+                pix = doc[0].get_pixmap(dpi=150, alpha=False)
+                image = np.frombuffer(pix.samples, dtype=np.uint8).reshape((pix.height, pix.width, pix.n))
+                return cv2.cvtColor(image, cv2.COLOR_RGBA2BGR if pix.n == 4 else cv2.COLOR_RGB2BGR)
+
+        encoded = np.fromfile(path, dtype=np.uint8)
+        image = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError(f"Could not read image: {os.path.basename(path)}")
+        return image
+
+    def select_roi_on_canvas(self, image, sample_index, sample_count, field_index, field_guide):
+        image_height, image_width = image.shape[:2]
+        max_width = max(320, min(1200, self.winfo_screenwidth() - 80))
+        max_height = max(240, min(700, self.winfo_screenheight() - 220))
+        scale = min(1.0, max_width / image_width, max_height / image_height)
+        display_width = max(1, round(image_width * scale))
+        display_height = max(1, round(image_height * scale))
+        preview = cv2.resize(
+            image,
+            (display_width, display_height),
+            interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR,
+        )
+        preview = cv2.cvtColor(preview, cv2.COLOR_BGR2RGB)
+
+        window = ctk.CTkToplevel(self)
+        window.title("Teach Number Areas")
+        window.geometry(f"{display_width + 40}x{display_height + 145}")
+        window.transient(self)
+        window.grab_set()
+
+        ctk.CTkLabel(
+            window,
+            text=f"Sample {sample_index}/{sample_count}   |   Area {field_index}/3: {field_guide}",
+            font=("Arial", 16, "bold"),
+        ).pack(pady=(10, 3))
+        ctk.CTkLabel(
+            window,
+            text="Drag a rectangle around the number, then confirm it.",
+            text_color="#bdc3c7",
+        ).pack(pady=(0, 6))
+
+        canvas = tk.Canvas(
+            window,
+            width=display_width,
+            height=display_height,
+            highlightthickness=0,
+            cursor="crosshair",
+        )
+        canvas.pack(padx=12, pady=4)
+        photo = ImageTk.PhotoImage(Image.fromarray(preview))
+        canvas.image = photo
+        canvas.create_image(0, 0, image=photo, anchor="nw")
+        actions = ctk.CTkFrame(window, fg_color="transparent")
+        actions.pack(pady=(4, 10))
+
+        state = {"start": None, "rect": None, "box": None, "result": None}
+        confirm_button = ctk.CTkButton(actions, text="Confirm area", state="disabled", width=130)
+
+        def clamp_point(event):
+            return (
+                min(max(event.x, 0), display_width),
+                min(max(event.y, 0), display_height),
+            )
+
+        def start_selection(event):
+            state["start"] = clamp_point(event)
+            state["box"] = None
+            confirm_button.configure(state="disabled")
+            if state["rect"] is not None:
+                canvas.delete(state["rect"])
+            state["rect"] = canvas.create_rectangle(
+                *state["start"],
+                *state["start"],
+                outline="#e74c3c",
+                width=3,
+            )
+
+        def update_selection(event):
+            if state["start"] is None:
+                return
+            end_x, end_y = clamp_point(event)
+            start_x, start_y = state["start"]
+            canvas.coords(state["rect"], start_x, start_y, end_x, end_y)
+
+        def finish_selection(event):
+            if state["start"] is None:
+                return
+            end_x, end_y = clamp_point(event)
+            start_x, start_y = state["start"]
+            box = (
+                min(start_x, end_x),
+                min(start_y, end_y),
+                max(start_x, end_x),
+                max(start_y, end_y),
+            )
+            if box[2] - box[0] >= 4 and box[3] - box[1] >= 4:
+                state["box"] = box
+                confirm_button.configure(state="normal")
+
+        def undo_selection():
+            state["box"] = None
+            state["start"] = None
+            confirm_button.configure(state="disabled")
+            if state["rect"] is not None:
+                canvas.delete(state["rect"])
+                state["rect"] = None
+
+        def confirm_selection():
+            if state["box"] is None:
+                return
+            x1, y1, x2, y2 = state["box"]
+            state["result"] = (
+                x1 / display_width,
+                y1 / display_height,
+                x2 / display_width,
+                y2 / display_height,
+            )
+            window.destroy()
+
+        def cancel_selection():
+            window.destroy()
+
+        canvas.bind("<ButtonPress-1>", start_selection)
+        canvas.bind("<B1-Motion>", update_selection)
+        canvas.bind("<ButtonRelease-1>", finish_selection)
+        ctk.CTkButton(actions, text="Undo", command=undo_selection, width=90, fg_color="#566573").pack(
+            side="left", padx=4
+        )
+        confirm_button.configure(command=confirm_selection)
+        confirm_button.pack(side="left", padx=4)
+        ctk.CTkButton(
+            actions,
+            text="Cancel calibration",
+            command=cancel_selection,
+            width=150,
+            fg_color="#566573",
+        ).pack(side="left", padx=4)
+        window.protocol("WM_DELETE_WINDOW", cancel_selection)
+        window.wait_window()
+        return state["result"]
+
+    def calibrate_field_rois(self):
+        sample_paths = filedialog.askopenfilenames(
+            parent=self,
+            title="Select sample images or PDFs",
+            filetypes=[("Images and PDFs", "*.jpg *.jpeg *.png *.pdf"), ("All files", "*.*")],
+        )
+        if not sample_paths:
+            return
+        messagebox.showinfo(
+            "Teach Number Areas",
+            "For each sample, select the three fields in order: delivery permit, supply order, invoice.\n"
+            "Drag a box around each number and click Confirm area. You can undo a selection or cancel the run.",
+            parent=self,
+        )
+
+        samples = []
+        cancelled = False
+        try:
+            for sample_index, path in enumerate(sample_paths, start=1):
+                image = self.load_calibration_image(path)
+                sample_rois = []
+
+                for field_index, guide in enumerate(FIELD_GUIDES, start=1):
+                    roi = self.select_roi_on_canvas(
+                        image,
+                        sample_index,
+                        len(sample_paths),
+                        field_index,
+                        guide,
+                    )
+                    if roi is None:
+                        cancelled = True
+                        break
+                    sample_rois.append(roi)
+
+                if cancelled:
+                    break
+                samples.append(sample_rois)
+        except Exception as ex:
+            messagebox.showerror("Calibration failed", str(ex))
+            return
+
+        if cancelled:
+            messagebox.showinfo("Calibration cancelled", "No ROI settings were changed.")
+            return
+
+        trained_rois = aggregate_roi_samples(samples)
+        previous_rois = self.field_rois
+        self.field_rois = trained_rois
+        try:
+            with open(self.roi_config_path, "w", encoding="utf-8") as config_file:
+                json.dump({"field_rois": self.field_rois}, config_file, indent=2)
+        except OSError as ex:
+            self.field_rois = previous_rois
+            messagebox.showerror("Calibration failed", f"Could not save the ROI profile: {ex}")
+            return
+
+        self.lbl_calibration.configure(text=f"Calibrated from {len(samples)} samples", text_color="#2ecc71")
+        messagebox.showinfo(
+            "Calibration saved",
+            f"Saved locations for {len(FIELD_LABELS)} fields from {len(samples)} samples.\n"
+            "The saved profile will be used automatically next time.",
+        )
+
     def run_process(self):
         if not self.folder_path and not self.selected_file:
             messagebox.showwarning("Alert", "Please select a source folder or file first.")
@@ -227,14 +484,18 @@ class SmartRenamer(ctk.CTk):
         anchors = [[] for _ in FIELD_KEYWORDS]
 
         for item_index, item in enumerate(items):
-            normalized = self.normalize_ocr_text(item["text"])
-            for digit_run in re.finditer(r"\d+", normalized):
+            raw_text = item["text"].translate(DIGIT_TRANSLATION)
+            normalized = self.normalize_ocr_text(raw_text)
+            for digit_run in re.finditer(r"\d+", raw_text):
                 run = digit_run.group()
+                if len(run) < 5:
+                    continue
+                normalized_start = len(self.normalize_ocr_text(raw_text[:digit_run.start()]))
                 candidates.append({
                     "value": run,
                     "item_index": item_index,
-                    "start": digit_run.start(),
-                    "end": digit_run.end(),
+                    "start": normalized_start,
+                    "end": normalized_start + len(run),
                     "box": item["box"],
                     "confidence": item["confidence"],
                 })
@@ -315,7 +576,7 @@ class SmartRenamer(ctk.CTk):
         image_height, image_width = image.shape[:2]
         numbers = []
 
-        for left, top, right, bottom in FIELD_ROIS:
+        for left, top, right, bottom in self.field_rois:
             x1 = round(image_width * left)
             y1 = round(image_height * top)
             x2 = round(image_width * right)
@@ -387,7 +648,12 @@ class SmartRenamer(ctk.CTk):
 
         return tuple(numbers)
 
+    def get_number_length_note_path(self, source_path, note_folder):
+        filename = os.path.basename(source_path)
+        return os.path.join(note_folder, f"{filename}_ocr_note.txt")
+
     def write_number_length_note(self, source_path, note_folder, numbers):
+        note_path = self.get_number_length_note_path(source_path, note_folder)
         invalid_numbers = [
             (label, number)
             for label, number in zip(FIELD_LABELS, numbers)
@@ -397,8 +663,6 @@ class SmartRenamer(ctk.CTk):
             return ""
 
         filename = os.path.basename(source_path)
-        stem = os.path.splitext(filename)[0]
-        note_path = os.path.join(note_folder, f"{stem}_ocr_note.txt")
         lines = [
             f"الملف: {filename}",
             "الأرقام المستخرجة:",
@@ -470,6 +734,10 @@ class SmartRenamer(ctk.CTk):
                 ext = os.path.splitext(filename)[1]
 
                 try:
+                    note_path = self.get_number_length_note_path(source_path, dest_folder)
+                    if os.path.exists(note_path):
+                        os.remove(note_path)
+
                     if ext.lower() == ".pdf":
                         numbers = ("UNKNOWN", "UNKNOWN", "UNKNOWN")
                         best_numbers = numbers
