@@ -1,3 +1,4 @@
+--index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
 easyocr
@@ -6,3 +7,4 @@ opencv-python
 numpy
 customtkinter
 pyinstaller
+Pillow
