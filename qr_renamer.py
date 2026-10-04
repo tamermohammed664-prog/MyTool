@@ -33,27 +33,59 @@ def preprocess_variants(image):
 
     if image.ndim == 2:
         gray = image
-    elif image.ndim == 3 and image.shape[2] == 3:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    elif image.ndim == 3 and image.shape[2] == 4:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
+    elif image.ndim == 3 and image.shape[2] in (3, 4):
+        color_image = (
+            image
+            if image.shape[2] == 3
+            else cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        )
+        gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
+        yellow_background = cv2.inRange(
+            hsv,
+            np.array([15, 35, 50], dtype=np.uint8),
+            np.array([40, 255, 255], dtype=np.uint8),
+        )
+        light_gray_background = cv2.inRange(
+            hsv,
+            np.array([0, 0, 145], dtype=np.uint8),
+            np.array([180, 45, 255], dtype=np.uint8),
+        )
+        background_mask = cv2.bitwise_or(yellow_background, light_gray_background)
+        gray = cv2.bitwise_or(gray, background_mask)
     else:
         return ()
 
-    enlarged = cv2.resize(
+    enlarged_gray = cv2.resize(
         gray,
         None,
         fx=2.0,
         fy=2.0,
         interpolation=cv2.INTER_CUBIC,
     )
-    variants = [gray, enlarged]
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    contrast_enhanced = clahe.apply(enlarged_gray)
+    _, otsu = cv2.threshold(
+        contrast_enhanced,
+        0,
+        255,
+        cv2.THRESH_BINARY | cv2.THRESH_OTSU,
+    )
+    sharpened = cv2.filter2D(
+        enlarged_gray,
+        ddepth=-1,
+        kernel=np.array(
+            [[0, -1, 0], [-1, 5, -1], [0, -1, 0]],
+            dtype=np.float32,
+        ),
+    )
+    variants = [enlarged_gray, otsu, sharpened]
 
-    min_dimension = min(enlarged.shape[:2])
+    min_dimension = min(sharpened.shape[:2])
     block_size = min(21, min_dimension if min_dimension % 2 else min_dimension - 1)
     if block_size >= 3:
         thresholded = cv2.adaptiveThreshold(
-            enlarged,
+            sharpened,
             255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY,
@@ -61,6 +93,27 @@ def preprocess_variants(image):
             5,
         )
         variants.append(thresholded)
+
+    height, width = enlarged_gray.shape[:2]
+    center = (width / 2.0, height / 2.0)
+    for angle in (-5, 5):
+        rotation = cv2.getRotationMatrix2D(center, angle, 1.0)
+        cosine = abs(rotation[0, 0])
+        sine = abs(rotation[0, 1])
+        rotated_width = int(np.ceil((height * sine) + (width * cosine)))
+        rotated_height = int(np.ceil((height * cosine) + (width * sine)))
+        rotation[0, 2] += (rotated_width / 2.0) - center[0]
+        rotation[1, 2] += (rotated_height / 2.0) - center[1]
+        variants.append(
+            cv2.warpAffine(
+                enlarged_gray,
+                rotation,
+                (rotated_width, rotated_height),
+                flags=cv2.INTER_CUBIC,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=255,
+            )
+        )
 
     return tuple(variants)
 
@@ -135,7 +188,7 @@ class ModernQRRenamer(ctk.CTk):
         # فاصل أنيق
         ctk.CTkFrame(self.io_card, height=1, fg_color=BORDER_COLOR).pack(fill="x", padx=15, pady=2)
 
-        self.copy_unreadable_var = ctk.BooleanVar(value=False)
+        self.copy_unreadable_var = ctk.BooleanVar(value=True)
         self.create_io_row(
             self.io_card,
             "Output Folder",
@@ -164,11 +217,22 @@ class ModernQRRenamer(ctk.CTk):
         )
         self.lbl_opt_title.pack(anchor="w", padx=20, pady=(12, 6))
 
-        self.format_var = ctk.IntVar(value=2)
+        self.format_var = ctk.IntVar(value=1)
+
+        self.radio_mode1 = ctk.CTkRadioButton(
+            self.options_card,
+            text="Ref - RI (Default)",
+            variable=self.format_var,
+            value=1,
+            font=("Segoe UI", 12),
+            fg_color=ACCENT_BLUE,
+            hover_color=ACCENT_HOVER
+        )
+        self.radio_mode1.pack(anchor="w", padx=25, pady=4)
 
         self.radio_mode2 = ctk.CTkRadioButton(
             self.options_card,
-            text="Custom Short",
+            text="Custom Short (Ref - RI - PO)",
             variable=self.format_var,
             value=2,
             font=("Segoe UI", 12),
@@ -177,16 +241,16 @@ class ModernQRRenamer(ctk.CTk):
         )
         self.radio_mode2.pack(anchor="w", padx=25, pady=4)
 
-        self.radio_mode1 = ctk.CTkRadioButton(
+        self.radio_mode3 = ctk.CTkRadioButton(
             self.options_card,
             text="Full Data",
             variable=self.format_var,
-            value=1,
+            value=3,
             font=("Segoe UI", 12),
             fg_color=ACCENT_BLUE,
             hover_color=ACCENT_HOVER
         )
-        self.radio_mode1.pack(anchor="w", padx=25, pady=4)
+        self.radio_mode3.pack(anchor="w", padx=25, pady=4)
 
         # قسم شريط التقدم والحالة
         self.status_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -366,22 +430,26 @@ class ModernQRRenamer(ctk.CTk):
         mode = self.naming_mode
         
         if mode == 1:
-            # الخيار الأول: أرقام فقط بنفس ترتيب الكيو آر كود (e - c - pr - po - ri - ref)
-            vals = [parsed_data.get(k, '') for k in keys_order if k in parsed_data]
+            # الخيار الافتراضي: ref - ri
+            vals = [parsed_data.get(k, '') for k in ('ref', 'ri') if parsed_data.get(k)]
             if vals:
                 return " - ".join(vals)
         elif mode == 2:
-            # الخيار الثاني: آخر 3 أرقام بعكس الترتيب (ref - ri - po)
-            ref = parsed_data.get('ref', '')
-            ri = parsed_data.get('ri', '')
-            po = parsed_data.get('po', '')
-            vals = [v for v in [ref, ri, po] if v]
+            # الخيار الثاني: ref - ri - po
+            vals = [parsed_data.get(k, '') for k in ('ref', 'ri', 'po') if parsed_data.get(k)]
+            if vals:
+                return " - ".join(vals)
+        elif mode == 3:
+            # الخيار الثالث: جميع القيم بترتيب الحقول المحدد
+            vals = [parsed_data.get(k, '') for k in keys_order if parsed_data.get(k)]
             if vals:
                 return " - ".join(vals)
 
         # Fallback إذا كان النص مجرد أرقام بدون مفاتيح
         digits = re.findall(r'\d+', raw_text)
         if digits:
+            if mode == 1 and len(digits) >= 2:
+                return " - ".join(digits[-1:-3:-1])  # آخر رقمين بعكس الترتيب
             if mode == 2 and len(digits) >= 3:
                 return " - ".join(digits[-1:-4:-1])  # آخر 3 بعكس الترتيب
             return " - ".join(digits)
