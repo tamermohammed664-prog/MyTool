@@ -6,3 +6,6 @@ PyMuPDF
 Pillow
 opencv-python-headless
 numpy
+pytesseract
+pdf2image
+PyQt6
