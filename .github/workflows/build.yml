@@ -1,48 +1,59 @@
-name: Build Smart Renamer Executable
+name: Build Windows Executable
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: Install Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pyinstaller
+      - name: Install All Dependencies Directly
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install customtkinter easyocr torch torchvision PyMuPDF Pillow opencv-python-headless numpy pyinstaller
 
-    - name: Download EasyOCR Models for Offline Use
-      run: |
-        mkdir -p easyocr_models
-        curl -L -o easyocr_models/craft_mlt_25_2020.pth https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/craft_mlt_25_2020.pth
-        curl -L -o easyocr_models/english_g2.pth https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.pth
-        curl -L -o easyocr_models/arabic_g2.pth https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/arabic_g2.pth
+      - name: Create Default ROI Config File
+        shell: powershell
+        run: |
+          if (!(Test-Path ".smart_renamer_rois.json")) { "{}" | Out-File -Encoding utf8 .smart_renamer_rois.json }
 
-    - name: Build Executable with PyInstaller
-      run: |
-        pyinstaller --noconfirm --onedir --windowed `
-          --add-data "easyocr_models;easyocr_models" `
-          --collect-all easyocr `
-          --collect-all customtkinter `
-          --name "SmartRenamer" `
-          main.py
+      - name: Download EasyOCR Models for Offline Use
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "easyocr_models"
+          Invoke-WebRequest -Uri "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/craft_mlt_25_2020.pth" -OutFile "easyocr_models\craft_mlt_25_2020.pth"
+          Invoke-WebRequest -Uri "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.pth" -OutFile "easyocr_models\english_g2.pth"
+          Invoke-WebRequest -Uri "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/arabic_g2.pth" -OutFile "easyocr_models\arabic_g2.pth"
 
-    - name: Archive Build Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: SmartRenamer-Windows
-        path: dist/SmartRenamer/
+      - name: Build Executable with PyInstaller
+        shell: powershell
+        run: |
+          python -m pyinstaller --noconfirm --onefile --windowed `
+            --icon="my_icon.ico" `
+            --add-data "easyocr_models;easyocr_models" `
+            --add-data ".smart_renamer_rois.json;." `
+            --collect-all easyocr `
+            --collect-all customtkinter `
+            --collect-all torch `
+            --collect-all torchvision `
+            --name "SmartRenamer" `
+            smart_renamer.py
+
+      - name: Upload Executable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmartRenamer-Windows-x64
+          path: dist/SmartRenamer.exe
