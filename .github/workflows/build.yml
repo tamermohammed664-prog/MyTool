@@ -1,7 +1,7 @@
-name: Build Single Directory Executable
+name: Build Standalone Executable
 
 on:
-  workflow_dispatch: # يتيح التشغيل اليدوي المباشر من الواجهة
+  workflow_dispatch: # يتيح التشغيل اليدوي المباشر من تبويب Actions
   push:
     branches:
       - main # يشتغل تلقائياً عند أي Push على فرع main
@@ -25,26 +25,22 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller customtkinter opencv-python PyMuPDF numpy
+        pip install pyinstaller customtkinter opencv-python PyMuPDF numpy pyzbar
 
-    - name: Build with PyInstaller (onedir)
+    - name: Build with PyInstaller (onefile)
       run: |
-        pyinstaller --noconfirm --onedir --windowed --icon="my_icon.ico" --add-data "my_icon.ico;." qr_renamer.py
+        pyinstaller --noconfirm --onefile --windowed --icon="my_icon.ico" --add-data "my_icon.ico;." qr_renamer.py
 
-    - name: Compress Build Output
-      run: |
-        powershell Compress-Archive -Path dist/qr_renamer/* -DestinationPath QR_Renamer_Windows.zip
-
-    - name: Upload Artifact (تحميل مباشر من الـ Actions)
+    - name: Upload Standalone EXE Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: QR_Renamer_Windows
-        path: QR_Renamer_Windows.zip
+        name: QR_Renamer_Executable
+        path: dist/qr_renamer.exe
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        files: QR_Renamer_Windows.zip
+        files: dist/qr_renamer.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
