@@ -1,10 +1,13 @@
 name: Build Single Directory Executable
 
 on:
+  workflow_dispatch: # يتيح التشغيل اليدوي المباشر من الواجهة
   push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
+    branches:
+      - main # يشتغل تلقائياً عند أي Push على فرع main
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -32,8 +35,15 @@ jobs:
       run: |
         powershell Compress-Archive -Path dist/qr_renamer/* -DestinationPath QR_Renamer_Windows.zip
 
-    - name: Release Executable
-      uses: softprops/action-gh-release@v1
+    - name: Upload Artifact (تحميل مباشر من الـ Actions)
+      uses: actions/upload-artifact@v4
+      with:
+        name: QR_Renamer_Windows
+        path: QR_Renamer_Windows.zip
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
       with:
         files: QR_Renamer_Windows.zip
       env:
