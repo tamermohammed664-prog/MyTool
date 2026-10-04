@@ -9,6 +9,62 @@ import pymupdf as fitz
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
+try:
+    from pyzbar.pyzbar import decode as zbar_decode
+    from pyzbar.pyzbar import ZBarSymbol
+except (ImportError, OSError):
+    zbar_decode = None
+    ZBarSymbol = None
+
+
+def get_qr_roi(image):
+    if image is None or image.size == 0:
+        return image
+
+    height, width = image.shape[:2]
+    roi_height = max(1, int(height * 0.30))
+    roi_width = max(1, int(width * 0.35))
+    return image[:roi_height, :roi_width]
+
+
+def preprocess_variants(image):
+    if image is None or image.size == 0:
+        return ()
+
+    if image.ndim == 2:
+        gray = image
+    elif image.ndim == 3 and image.shape[2] == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    elif image.ndim == 3 and image.shape[2] == 4:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGRA2GRAY)
+    else:
+        return ()
+
+    enlarged = cv2.resize(
+        gray,
+        None,
+        fx=2.0,
+        fy=2.0,
+        interpolation=cv2.INTER_CUBIC,
+    )
+    variants = [gray, enlarged]
+
+    min_dimension = min(enlarged.shape[:2])
+    block_size = min(21, min_dimension if min_dimension % 2 else min_dimension - 1)
+    if block_size >= 3:
+        thresholded = cv2.adaptiveThreshold(
+            enlarged,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            block_size,
+            5,
+        )
+        variants.append(thresholded)
+
+    return tuple(variants)
+
+
 # إعدادات الواجهة والمظهر الجديد (Modern Dark Theme)
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -23,6 +79,8 @@ TEXT_MUTED = "#64748B"      # النصوص المساعدة
 SUCCESS_COLOR = "#10B981"   # لون النجاح
 CANCEL_BTN = "#1E293B"      # زر الإلغاء
 UNREADABLE_QR_REPORT = "QR_Not_Readable.txt"
+NOT_FOUND_IMAGES_FOLDER = "not_found_images"
+NOT_FOUND_IMAGES_REPORT = "not_found_list.txt"
 
 class ModernQRRenamer(ctk.CTk):
     def __init__(self):
@@ -77,12 +135,15 @@ class ModernQRRenamer(ctk.CTk):
         # فاصل أنيق
         ctk.CTkFrame(self.io_card, height=1, fg_color=BORDER_COLOR).pack(fill="x", padx=15, pady=2)
 
+        self.copy_unreadable_var = ctk.BooleanVar(value=False)
         self.create_io_row(
             self.io_card,
             "Output Folder",
             self.select_output_folder,
             "lbl_output",
-            "Same as source (No overwrite)"
+            "Same as source (No overwrite)",
+            trailing_text="Unnamed images",
+            trailing_variable=self.copy_unreadable_var,
         )
 
         # كارت الخيارات وأنماط التسمية
@@ -103,7 +164,18 @@ class ModernQRRenamer(ctk.CTk):
         )
         self.lbl_opt_title.pack(anchor="w", padx=20, pady=(12, 6))
 
-        self.format_var = ctk.IntVar(value=1)
+        self.format_var = ctk.IntVar(value=2)
+
+        self.radio_mode2 = ctk.CTkRadioButton(
+            self.options_card,
+            text="Custom Short",
+            variable=self.format_var,
+            value=2,
+            font=("Segoe UI", 12),
+            fg_color=ACCENT_BLUE,
+            hover_color=ACCENT_HOVER
+        )
+        self.radio_mode2.pack(anchor="w", padx=25, pady=4)
 
         self.radio_mode1 = ctk.CTkRadioButton(
             self.options_card,
@@ -115,17 +187,6 @@ class ModernQRRenamer(ctk.CTk):
             hover_color=ACCENT_HOVER
         )
         self.radio_mode1.pack(anchor="w", padx=25, pady=4)
-
-        self.radio_mode2 = ctk.CTkRadioButton(
-            self.options_card,
-            text="Custom Short",
-            variable=self.format_var,
-            value=2,
-            font=("Segoe UI", 12),
-            fg_color=ACCENT_BLUE,
-            hover_color=ACCENT_HOVER
-        )
-        self.radio_mode2.pack(anchor="w", padx=25, pady=(4, 14))
 
         # قسم شريط التقدم والحالة
         self.status_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -195,11 +256,14 @@ class ModernQRRenamer(ctk.CTk):
         self.folder_path = ""
         self.selected_file = ""
         self.output_path = ""
+        self.result_folder = ""
         self.worker_events = queue.Queue()
         self.preview_window = None
         self.preview_items = []
         self.failed_files = []
         self.unreadable_report_path = ""
+        self.not_found_report_path = ""
+        self.not_found_folder = ""
         self.cancel_requested = threading.Event()
         self.worker_active = False
         self.qr_detector = cv2.QRCodeDetector()
@@ -207,7 +271,17 @@ class ModernQRRenamer(ctk.CTk):
 
         self.after(50, self.process_worker_events)
 
-    def create_io_row(self, parent, btn_text, command, attr_name, default_txt, secondary_btn=None):
+    def create_io_row(
+        self,
+        parent,
+        btn_text,
+        command,
+        attr_name,
+        default_txt,
+        secondary_btn=None,
+        trailing_text=None,
+        trailing_variable=None,
+    ):
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", padx=15, pady=8)
 
@@ -237,6 +311,20 @@ class ModernQRRenamer(ctk.CTk):
                 font=("Segoe UI", 12)
             )
             sec_btn.pack(side="left", padx=(0, 10))
+
+        if trailing_text:
+            self.copy_unreadable_checkbox = ctk.CTkCheckBox(
+                row,
+                text=trailing_text,
+                variable=trailing_variable,
+                font=("Segoe UI", 12),
+                checkbox_width=18,
+                checkbox_height=18,
+                border_width=2,
+                fg_color=ACCENT_BLUE,
+                hover_color=ACCENT_HOVER,
+            )
+            self.copy_unreadable_checkbox.pack(side="right", padx=(10, 0))
 
         lbl = ctk.CTkLabel(row, text=default_txt, font=("Segoe UI", 12), text_color=TEXT_MUTED, anchor="w")
         lbl.pack(side="left", fill="x", expand=True)
@@ -301,9 +389,36 @@ class ModernQRRenamer(ctk.CTk):
         return "UNKNOWN"
 
     def decode_qr_from_image(self, image):
-        data, _, _ = self.qr_detector.detectAndDecode(image)
-        if data:
-            return self.parse_qr_text(data)
+        if image is None or not isinstance(image, np.ndarray) or image.size == 0:
+            return "UNKNOWN"
+
+        roi_variants = preprocess_variants(get_qr_roi(image))
+        if zbar_decode is not None:
+            for variant in roi_variants:
+                try:
+                    decoded_objects = zbar_decode(
+                        variant,
+                        symbols=[ZBarSymbol.QRCODE],
+                    )
+                except Exception:
+                    decoded_objects = ()
+                for decoded in decoded_objects:
+                    raw_text = decoded.data.decode("utf-8", errors="ignore")
+                    if raw_text:
+                        parsed = self.parse_qr_text(raw_text)
+                        if parsed != "UNKNOWN":
+                            return parsed
+
+        for variant in roi_variants:
+            try:
+                data, _, _ = self.qr_detector.detectAndDecode(variant)
+            except cv2.error:
+                continue
+            if data:
+                parsed = self.parse_qr_text(data)
+                if parsed != "UNKNOWN":
+                    return parsed
+
         return "UNKNOWN"
 
     def run_process(self):
@@ -324,13 +439,22 @@ class ModernQRRenamer(ctk.CTk):
 
         self.cancel_requested.clear()
         self.naming_mode = self.format_var.get()
+        copy_unreadable = self.copy_unreadable_var.get()
         self.worker_active = True
         self.failed_files = []
+        self.unreadable_report_path = ""
+        self.not_found_report_path = ""
+        self.not_found_folder = ""
         self.btn_start.configure(state="disabled", text="Scanning...")
         self.btn_cancel.configure(state="normal")
+        self.copy_unreadable_checkbox.configure(state="disabled")
         self.progress.set(0)
         self.lbl_status.configure(text="Scanning QR Codes...")
-        threading.Thread(target=self.scan_files, daemon=True).start()
+        threading.Thread(
+            target=self.scan_files,
+            args=(copy_unreadable,),
+            daemon=True,
+        ).start()
 
     def cancel_process(self):
         if self.preview_window:
@@ -353,10 +477,12 @@ class ModernQRRenamer(ctk.CTk):
             elif event == "scan_done":
                 self.worker_active = False
                 self.btn_cancel.configure(state="normal")
+                self.copy_unreadable_checkbox.configure(state="normal")
                 self.show_preview(payload)
             elif event == "scan_cancelled":
                 self.worker_active = False
                 self.btn_start.configure(state="normal", text="START PROCESS")
+                self.copy_unreadable_checkbox.configure(state="normal")
                 self.progress.set(0)
                 self.lbl_status.configure(text="Cancelled.")
             elif event == "scan_error":
@@ -378,10 +504,12 @@ class ModernQRRenamer(ctk.CTk):
 
         self.after(50, self.process_worker_events)
 
-    def scan_files(self):
+    def scan_files(self, copy_unreadable=False):
         try:
             source_folder = os.path.dirname(self.selected_file) if self.selected_file else self.folder_path
-            dest_folder = self.output_path or source_folder
+            dest_folder = self.output_path or os.path.join(source_folder, "result")
+            os.makedirs(dest_folder, exist_ok=True)
+            self.result_folder = dest_folder
             supported_exts = (".jpg", ".jpeg", ".png", ".pdf")
 
             files = (
@@ -400,6 +528,7 @@ class ModernQRRenamer(ctk.CTk):
                 return
 
             results = []
+            not_found_files = []
             reserved_paths = set()
             total = len(files)
 
@@ -437,7 +566,21 @@ class ModernQRRenamer(ctk.CTk):
 
                     if qr_data == "UNKNOWN":
                         self.failed_files.append(filename)
-                        results.append({"filename": filename, "new_name": "-", "status": "QR Code Not Found", "eligible": False})
+                        status = "QR Code Not Found"
+                        if copy_unreadable:
+                            not_found_files.append(filename)
+                            self.not_found_folder = os.path.join(
+                                dest_folder, NOT_FOUND_IMAGES_FOLDER
+                            )
+                            try:
+                                os.makedirs(self.not_found_folder, exist_ok=True)
+                                shutil.copy2(
+                                    source_path,
+                                    os.path.join(self.not_found_folder, filename),
+                                )
+                            except OSError as ex:
+                                status += f"; copy failed: {ex}"
+                        results.append({"filename": filename, "new_name": "-", "status": status, "eligible": False})
                         continue
 
                     proposed_name = f"{qr_data}{ext}"
@@ -466,6 +609,18 @@ class ModernQRRenamer(ctk.CTk):
                     )
                 except OSError as ex:
                     self.worker_events.put(("scan_report_error", str(ex)))
+                if copy_unreadable and not_found_files:
+                    not_found_report_path = os.path.join(
+                        self.not_found_folder, NOT_FOUND_IMAGES_REPORT
+                    )
+                    try:
+                        with open(
+                            not_found_report_path, "w", encoding="utf-8"
+                        ) as report:
+                            report.write("\n".join(not_found_files))
+                        self.not_found_report_path = not_found_report_path
+                    except OSError as ex:
+                        self.worker_events.put(("scan_report_error", str(ex)))
                 self.worker_events.put(("scan_done", results))
         except Exception as ex:
             self.worker_events.put(("scan_error", str(ex)))
@@ -505,7 +660,8 @@ class ModernQRRenamer(ctk.CTk):
         window = ctk.CTkToplevel(self)
         self.preview_window = window
         window.title("Review Rename Results")
-        window.geometry("900x560")
+        window.geometry("900x720")
+        window.resizable(True, True)
         window.configure(fg_color=BG_MAIN)
         window.transient(self)
         window.grab_set()
@@ -522,10 +678,17 @@ class ModernQRRenamer(ctk.CTk):
             text=(
                 f"{ready_count} files ready to rename; "
                 f"{skipped_count} skipped or already named."
+                f"\nResults folder: {self.result_folder}"
                 + (
                     f"\nFiles without readable QR codes were listed in:"
                     f"\n{self.unreadable_report_path}"
                     if self.unreadable_report_path
+                    else ""
+                )
+                + (
+                    f"\nUnreadable images copied to:\n{self.not_found_folder}"
+                    f"\nList: {self.not_found_report_path}"
+                    if self.not_found_report_path
                     else ""
                 )
             ),
@@ -667,8 +830,6 @@ class ModernQRRenamer(ctk.CTk):
                     created_destination = True
                     shutil.copyfileobj(source, destination)
                 shutil.copystat(source_path, destination_path)
-                if not self.output_path:
-                    os.unlink(source_path)
                 renamed += 1
             except Exception as ex:
                 if created_destination and os.path.exists(destination_path):
@@ -721,6 +882,7 @@ class ModernQRRenamer(ctk.CTk):
         self.worker_active = False
         self.btn_start.configure(state="normal", text="START PROCESS")
         self.btn_cancel.configure(state="normal")
+        self.copy_unreadable_checkbox.configure(state="normal")
         self.progress.set(0)
         self.lbl_status.configure(text=message if title else "Ready")
         if show_dialog:
