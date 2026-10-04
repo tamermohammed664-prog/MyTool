@@ -34,9 +34,9 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path "easyocr_models"
-          Invoke-WebRequest -Uri "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/craft_mlt_25_2020.pth" -OutFile "easyocr_models\craft_mlt_25_2020.pth"
-          Invoke-WebRequest -Uri "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.pth" -OutFile "easyocr_models\english_g2.pth"
-          Invoke-WebRequest -Uri "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/arabic_g2.pth" -OutFile "easyocr_models\arabic_g2.pth"
+          curl.exe -L "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/craft_mlt_25_2020.pth" -o "easyocr_models\craft_mlt_25_2020.pth"
+          curl.exe -L "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/english_g2.pth" -o "easyocr_models\english_g2.pth"
+          curl.exe -L "https://github.com/JaidedAI/EasyOCR/releases/download/v1.3/arabic_g2.pth" -o "easyocr_models\arabic_g2.pth"
 
       - name: Build Executable with PyInstaller
         shell: powershell
