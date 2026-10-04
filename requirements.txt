@@ -1,5 +1,8 @@
 customtkinter
+easyocr
+torch
+torchvision
+PyMuPDF
+Pillow
 opencv-python-headless
-pymupdf
-pillow
-pyinstaller
+numpy
