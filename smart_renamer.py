@@ -3,6 +3,7 @@ import re
 import json
 import hmac
 import math
+import sys
 import cv2
 import queue
 import shutil
@@ -13,6 +14,29 @@ import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog
 from PIL import Image, ImageTk
+
+
+def setup_offline_easyocr():
+    user_easyocr_dir = os.path.expanduser("~/.EasyOCR/model")
+    os.makedirs(user_easyocr_dir, exist_ok=True)
+
+    if getattr(sys, "frozen", False):
+        base_dir = sys._MEIPASS
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    bundled_models_dir = os.path.join(base_dir, "easyocr_models")
+
+    if os.path.exists(bundled_models_dir):
+        for model_file in os.listdir(bundled_models_dir):
+            src = os.path.join(bundled_models_dir, model_file)
+            dst = os.path.join(user_easyocr_dir, model_file)
+            if not os.path.exists(dst):
+                shutil.copy2(src, dst)
+
+
+setup_offline_easyocr()
+
 import easyocr
 
 ctk.set_appearance_mode("dark")
@@ -28,7 +52,7 @@ FOOTER_BACKGROUND = "#1E293B"
 TEXT_PRIMARY = "#F1F5F9"
 TEXT_SECONDARY = "#94A3B8"
 LOGO_WHITE = "#0F172A"
-LOGO_BLUE = "#334155"
+LOGO_BLUE = "#1D4ED8"
 
 DIGIT_TRANSLATION = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 DOCUMENT_NUMBER_LENGTH = 8
