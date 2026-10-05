@@ -118,12 +118,12 @@ def preprocess_variants(image):
     return tuple(variants)
 
 
-# إعدادات الواجهة والمظهر الجديد (Modern Dark Theme)
+# إعدادات الواجهة والمظهر (Modern Dark Theme)
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-BG_MAIN = "#0B0F19"         # خلفية ناعمة وعميقة
-BG_CARD = "#151C2C"         # خلفية الكروت والبطاقات
+BG_MAIN = "#0B0F19"         # خلفية عميقة
+BG_CARD = "#151C2C"         # خلفية الكروت
 BORDER_COLOR = "#232D42"    # حدود التصميم
 ACCENT_BLUE = "#2563EB"     # الأزرق الأساسي
 ACCENT_HOVER = "#1D4ED8"    # عند التمرير على الأزرار
@@ -134,6 +134,7 @@ CANCEL_BTN = "#1E293B"      # زر الإلغاء
 UNREADABLE_QR_REPORT = "QR_Not_Readable.txt"
 NOT_FOUND_IMAGES_FOLDER = "not_found_images"
 NOT_FOUND_IMAGES_REPORT = "not_found_list.txt"
+
 
 class ModernQRRenamer(ctk.CTk):
     def __init__(self):
@@ -243,7 +244,7 @@ class ModernQRRenamer(ctk.CTk):
 
         self.radio_mode3 = ctk.CTkRadioButton(
             self.options_card,
-            text="Full Data",
+            text="Full Data (E - C - PR - PO - RI - Ref)",
             variable=self.format_var,
             value=3,
             font=("Segoe UI", 12),
@@ -310,7 +311,7 @@ class ModernQRRenamer(ctk.CTk):
 
         self.lbl_footer = ctk.CTkLabel(
             self.footer,
-            text="Created by Mr. Tamer Ismail",
+            text="Created by Mohamed Tamer Ismail",
             font=("Segoe UI", 11),
             text_color=TEXT_MUTED
         )
@@ -419,7 +420,7 @@ class ModernQRRenamer(ctk.CTk):
         keys_order = ['e', 'c', 'pr', 'po', 'ri', 'ref']
         parsed_data = {}
 
-        # استخراج المفاتيح والقيم
+        # استخراج المفاتيح والقيم (مثال: 'ref':'123' أو ref:123)
         matches = re.findall(r"['\"]?([a-zA-Z]+)['\"]?\s*:\s*['\"]?(\d+)['\"]?", raw_text)
         if not matches:
             matches = re.findall(r"([a-zA-Z]+)\s*['\"]?(\d+)['\"]?", raw_text)
@@ -440,7 +441,7 @@ class ModernQRRenamer(ctk.CTk):
             if vals:
                 return " - ".join(vals)
         elif mode == 3:
-            # الخيار الثالث: جميع القيم بترتيب الحقول المحدد
+            # الخيار الثالث: جميع القيم بترتيب الحقول المحدد (e, c, pr, po, ri, ref)
             vals = [parsed_data.get(k, '') for k in keys_order if parsed_data.get(k)]
             if vals:
                 return " - ".join(vals)
