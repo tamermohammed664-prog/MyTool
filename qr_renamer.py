@@ -29,66 +29,41 @@ def get_roi_by_region(image, region_type):
         return image[0:h_crop, 0:w_crop]
     elif region_type == "bottom_right":
         return image[max(0, height - h_crop):height, max(0, width - w_crop):width]
-    elif region_type == "top_right":
-        return image[0:h_crop, max(0, width - w_crop):width]
-    elif region_type == "bottom_left":
-        return image[max(0, height - h_crop):height, 0:w_crop]
-    elif region_type == "full":
-        return image
     
     return image
 
 
-def rotate_image(image, angle):
-    """
-    تدوير الصورة بأي زاوية مع الحفاظ على الأبعاد كاملة دون اقتطاع الحواف
-    """
-    height, width = image.shape[:2]
-    center = (width / 2.0, height / 2.0)
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-    cosine = abs(rotation_matrix[0, 0])
-    sine = abs(rotation_matrix[0, 1])
-    
-    new_width = int((height * sine) + (width * cosine))
-    new_height = int((height * cosine) + (width * sine))
-    
-    rotation_matrix[0, 2] += (new_width / 2.0) - center[0]
-    rotation_matrix[1, 2] += (new_height / 2.0) - center[1]
-    
-    return cv2.warpAffine(
-        image,
-        rotation_matrix,
-        (new_width, new_height),
-        flags=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=(255, 255, 255) if image.ndim == 3 else 255
-    )
-
-
 def generate_image_variants(gray_img):
     """
-    توليد فلترات تحسين التباين والمعالجة
+    توليد فلترات عاليّة الدقة والوضوح (CLAHE, Otsu, Unsharp Mask, Erosion, Adaptive)
     """
+    # 1. تكبير الصورة لزيادة دقة التفاصيل
     enlarged = cv2.resize(gray_img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
     
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    # 2. تحسين التباين التكيفي (CLAHE)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
     contrast = clahe.apply(enlarged)
     
+    # 3. الثنائية والتفريغ (Otsu Thresholding)
     _, otsu = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     
-    sharpened = cv2.filter2D(
-        enlarged,
-        ddepth=-1,
-        kernel=np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-    )
+    # 4. توضيح الحواف ورفع الحدة (Unsharp Masking)
+    gaussian_blur = cv2.GaussianBlur(contrast, (0, 0), 3)
+    sharpened = cv2.addWeighted(contrast, 1.5, gaussian_blur, -0.5, 0)
     
     variants = [enlarged, otsu, sharpened]
     
-    min_dim = min(sharpened.shape[:2])
+    # 5. معالجة التآكل المورفولوجي لتعديل الفجوات في مربعات QR
+    kernel = np.ones((2, 2), np.uint8)
+    eroded = cv2.erode(otsu, kernel, iterations=1)
+    variants.append(eroded)
+    
+    # 6. العتبة التكيفية (Adaptive Threshold)
+    min_dim = min(enlarged.shape[:2])
     block_size = min(21, min_dim if min_dim % 2 else min_dim - 1)
     if block_size >= 3:
         adaptive = cv2.adaptiveThreshold(
-            sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, 5
+            contrast, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, 5
         )
         variants.append(adaptive)
         
@@ -272,7 +247,7 @@ class ModernQRRenamer(ctk.CTk):
 
         self.lbl_footer = ctk.CTkLabel(
             self.footer,
-            text="Created by Mr. Tamer Ismail",
+            text="Created by Mohamed Tamer Ismail",
             font=("Segoe UI", 11),
             text_color=TEXT_MUTED
         )
@@ -283,8 +258,6 @@ class ModernQRRenamer(ctk.CTk):
         self.output_path = ""
         self.result_folder = ""
         self.worker_events = queue.Queue()
-        self.preview_window = None
-        self.preview_items = []
         self.failed_files = []
         self.unreadable_report_path = ""
         self.not_found_report_path = ""
@@ -385,20 +358,12 @@ class ModernQRRenamer(ctk.CTk):
         return "UNKNOWN"
 
     def try_decode(self, roi):
-        """
-        محاولة قراءة الـ QR من المقتطع عبر الفلترات المختلفة
-        """
         if roi is None or roi.size == 0:
             return "UNKNOWN"
 
-        if roi.ndim == 3:
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = roi
-
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY) if roi.ndim == 3 else roi
         variants = generate_image_variants(gray)
 
-        # 1. PyZBar
         if zbar_decode is not None:
             for var in variants:
                 try:
@@ -412,7 +377,6 @@ class ModernQRRenamer(ctk.CTk):
                         if parsed != "UNKNOWN":
                             return parsed
 
-        # 2. OpenCV QRDetector
         for var in variants:
             try:
                 data, _, _ = self.qr_detector.detectAndDecode(var)
@@ -426,33 +390,18 @@ class ModernQRRenamer(ctk.CTk):
         return "UNKNOWN"
 
     def decode_qr_from_image(self, image):
-        """
-        حلقة فحص متكاملة وتكرارية تجرّب:
-        1. التدويرات الرئيسية (0, 180, 90, 270)
-        2. التدويرات الدقيقة للميلان (-15, -10, -5, 5, 10, 15)
-        3. فحص الأركان الأربعة + الصورة الكاملة
-        """
         if image is None or not isinstance(image, np.ndarray) or image.size == 0:
             return "UNKNOWN"
 
-        regions = ["top_left", "bottom_right", "top_right", "bottom_left", "full"]
-        
-        # قائمة الزوايا الشاملة: (الاتجاهات الرئيسية ثم الميلان الدقيق)
-        rotation_angles = [0, 180, 90, 270, -5, 5, -10, 10, -15, 15]
+        # 1. البحث مباشرة في أعلى اليسار (المكان الأساسي للصور العرضية)
+        result = self.try_decode(get_roi_by_region(image, "top_left"))
+        if result != "UNKNOWN":
+            return result
 
-        for angle in rotation_angles:
-            if self.cancel_requested.is_set():
-                return "UNKNOWN"
-
-            # تدوير الصورة بالزاوية المطلوبة
-            rotated_img = rotate_image(image, angle) if angle != 0 else image
-
-            # فحص المناطق والكامل
-            for reg in regions:
-                roi = get_roi_by_region(rotated_img, reg)
-                result = self.try_decode(roi)
-                if result != "UNKNOWN":
-                    return result
+        # 2. البحث في أسفل اليمين (في حالة الصور العرضية المقلوبة 180 درجة)
+        result = self.try_decode(get_roi_by_region(image, "bottom_right"))
+        if result != "UNKNOWN":
+            return result
 
         return "UNKNOWN"
 
@@ -461,15 +410,6 @@ class ModernQRRenamer(ctk.CTk):
             return
         if not self.folder_path and not self.selected_file:
             messagebox.showwarning("Warning", "Please select a source folder or file first.")
-            return
-        if self.selected_file and not os.path.isfile(self.selected_file):
-            messagebox.showerror("Error", "The selected source file is not available.")
-            return
-        if not self.selected_file and not os.path.isdir(self.folder_path):
-            messagebox.showerror("Error", "The selected source folder is not available.")
-            return
-        if self.output_path and not os.path.isdir(self.output_path):
-            messagebox.showerror("Error", "The selected output folder is not available.")
             return
 
         self.cancel_requested.clear()
@@ -480,21 +420,19 @@ class ModernQRRenamer(ctk.CTk):
         self.unreadable_report_path = ""
         self.not_found_report_path = ""
         self.not_found_folder = ""
-        self.btn_start.configure(state="disabled", text="Scanning...")
+        self.btn_start.configure(state="disabled", text="Processing...")
         self.btn_cancel.configure(state="normal")
         self.copy_unreadable_checkbox.configure(state="disabled")
         self.progress.set(0)
-        self.lbl_status.configure(text="Scanning QR Codes...")
+        self.lbl_status.configure(text="Processing and Renaming...")
         threading.Thread(
-            target=self.scan_files,
+            target=self.process_files_direct,
             args=(copy_unreadable,),
             daemon=True,
         ).start()
 
     def cancel_process(self):
-        if self.preview_window:
-            self.cancel_preview()
-        elif self.worker_active:
+        if self.worker_active:
             self.cancel_requested.set()
             self.lbl_status.configure(text="Cancelling process...")
 
@@ -505,74 +443,61 @@ class ModernQRRenamer(ctk.CTk):
             except queue.Empty:
                 break
 
-            if event == "scan_progress":
+            if event == "progress":
                 index, total, filename = payload
-                self.progress.set((index - 1) / total)
-                self.lbl_status.configure(text=f"Scanning ({index}/{total}): {filename}")
-            elif event == "scan_done":
-                self.worker_active = False
-                self.btn_cancel.configure(state="normal")
-                self.copy_unreadable_checkbox.configure(state="normal")
-                self.show_preview(payload)
-            elif event == "scan_cancelled":
+                self.progress.set(index / total)
+                self.lbl_status.configure(text=f"Processing ({index}/{total}): {filename}")
+            elif event == "done":
+                renamed_count, total = payload
                 self.worker_active = False
                 self.btn_start.configure(state="normal", text="START PROCESS")
+                self.btn_cancel.configure(state="normal")
+                self.copy_unreadable_checkbox.configure(state="normal")
+                self.progress.set(1.0)
+                self.lbl_status.configure(text=f"Completed! {renamed_count}/{total} renamed.")
+                messagebox.showinfo("Done", f"Successfully processed {total} files.\nRenamed: {renamed_count}")
+            elif event == "cancelled":
+                self.worker_active = False
+                self.btn_start.configure(state="normal", text="START PROCESS")
+                self.btn_cancel.configure(state="normal")
                 self.copy_unreadable_checkbox.configure(state="normal")
                 self.progress.set(0)
                 self.lbl_status.configure(text="Cancelled.")
-            elif event == "scan_error":
-                self.worker_active = False
-                self.finish_with_error("Scan failed", payload)
-            elif event == "scan_report_error":
-                messagebox.showerror(
-                    "Report could not be saved",
-                    f"Could not save the list of files without readable QR codes:\n{payload}",
-                )
-            elif event == "apply_progress":
-                index, total, filename = payload
-                self.progress.set(index / total)
-                self.lbl_status.configure(text=f"Renaming ({index}/{total}): {filename}")
-            elif event == "apply_done":
-                renamed, selected_count, errors, cancelled = payload
-                self.worker_active = False
-                self.finish_apply(renamed, selected_count, errors, cancelled)
 
         self.after(50, self.process_worker_events)
 
-    def scan_files(self, copy_unreadable=False):
+    def process_files_direct(self, copy_unreadable=False):
         try:
             source_folder = os.path.dirname(self.selected_file) if self.selected_file else self.folder_path
             dest_folder = self.output_path or os.path.join(source_folder, "result")
             os.makedirs(dest_folder, exist_ok=True)
-            self.result_folder = dest_folder
             supported_exts = (".jpg", ".jpeg", ".png", ".pdf")
 
             files = (
                 [os.path.basename(self.selected_file)]
                 if self.selected_file
                 else sorted(
-                    filename
-                    for filename in os.listdir(source_folder)
+                    filename for filename in os.listdir(source_folder)
                     if filename.lower().endswith(supported_exts)
                     and os.path.isfile(os.path.join(source_folder, filename))
                 )
             )
 
             if not files:
-                self.worker_events.put(("scan_done", []))
+                self.worker_events.put(("done", (0, 0)))
                 return
 
-            results = []
-            not_found_files = []
             reserved_paths = set()
+            not_found_files = []
+            renamed_count = 0
             total = len(files)
 
             for index, filename in enumerate(files, start=1):
                 if self.cancel_requested.is_set():
-                    self.worker_events.put(("scan_cancelled", None))
+                    self.worker_events.put(("cancelled", None))
                     return
 
-                self.worker_events.put(("scan_progress", (index, total, filename)))
+                self.worker_events.put(("progress", (index, total, filename)))
                 source_path = os.path.join(source_folder, filename)
                 ext = os.path.splitext(filename)[1]
                 qr_data = "UNKNOWN"
@@ -581,9 +506,6 @@ class ModernQRRenamer(ctk.CTk):
                     if ext.lower() == ".pdf":
                         with fitz.open(source_path) as doc:
                             for page in doc:
-                                if self.cancel_requested.is_set():
-                                    self.worker_events.put(("scan_cancelled", None))
-                                    return
                                 pix = page.get_pixmap(dpi=150, alpha=False)
                                 img_np = np.frombuffer(pix.samples, dtype=np.uint8).reshape((pix.height, pix.width, pix.n))
                                 image = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR if pix.n == 4 else cv2.COLOR_RGB2BGR)
@@ -593,68 +515,43 @@ class ModernQRRenamer(ctk.CTk):
                     else:
                         encoded_image = np.fromfile(source_path, dtype=np.uint8)
                         image = cv2.imdecode(encoded_image, cv2.IMREAD_COLOR)
-                        if image is None:
-                            raise ValueError(f"Could not read image: {os.path.basename(source_path)}")
-                        qr_data = self.decode_qr_from_image(image)
+                        if image is not None:
+                            qr_data = self.decode_qr_from_image(image)
 
-                    if qr_data == "UNKNOWN":
+                    if qr_data != "UNKNOWN":
+                        proposed_name = f"{qr_data}{ext}"
+                        destination_path = self.reserve_destination(dest_folder, proposed_name, reserved_paths)
+                        shutil.copy2(source_path, destination_path)
+                        renamed_count += 1
+                    else:
                         self.failed_files.append(filename)
-                        status = "QR Code Not Found"
                         if copy_unreadable:
                             not_found_files.append(filename)
                             self.not_found_folder = os.path.join(dest_folder, NOT_FOUND_IMAGES_FOLDER)
-                            try:
-                                os.makedirs(self.not_found_folder, exist_ok=True)
-                                shutil.copy2(source_path, os.path.join(self.not_found_folder, filename))
-                            except OSError as ex:
-                                status += f"; copy failed: {ex}"
-                        results.append({"filename": filename, "new_name": "-", "status": status, "eligible": False})
-                        continue
+                            os.makedirs(self.not_found_folder, exist_ok=True)
+                            shutil.copy2(source_path, os.path.join(self.not_found_folder, filename))
 
-                    proposed_name = f"{qr_data}{ext}"
-                    destination_path, already_named = self.reserve_destination(
-                        dest_folder, proposed_name, source_path, reserved_paths
-                    )
-                    results.append({
-                        "filename": filename,
-                        "source_path": source_path,
-                        "destination_path": destination_path,
-                        "new_name": os.path.basename(destination_path),
-                        "status": "Already named" if already_named else "Ready",
-                        "eligible": not already_named,
-                    })
-                except Exception as ex:
+                except Exception:
                     self.failed_files.append(filename)
-                    results.append({"filename": filename, "new_name": "-", "status": f"Error: {ex}", "eligible": False})
 
-            if self.cancel_requested.is_set():
-                self.worker_events.put(("scan_cancelled", None))
-            else:
+            if self.failed_files:
                 report_path = os.path.join(dest_folder, UNREADABLE_QR_REPORT)
-                try:
-                    with open(report_path, "w", encoding="utf-8") as report:
-                        report.write("\n".join(self.failed_files))
-                    self.unreadable_report_path = report_path if self.failed_files else ""
-                except OSError as ex:
-                    self.worker_events.put(("scan_report_error", str(ex)))
-                if copy_unreadable and not_found_files:
-                    not_found_report_path = os.path.join(self.not_found_folder, NOT_FOUND_IMAGES_REPORT)
-                    try:
-                        with open(not_found_report_path, "w", encoding="utf-8") as report:
-                            report.write("\n".join(not_found_files))
-                        self.not_found_report_path = not_found_report_path
-                    except OSError as ex:
-                        self.worker_events.put(("scan_report_error", str(ex)))
-                self.worker_events.put(("scan_done", results))
-        except Exception as ex:
-            self.worker_events.put(("scan_error", str(ex)))
+                with open(report_path, "w", encoding="utf-8") as report:
+                    report.write("\n".join(self.failed_files))
 
-    def reserve_destination(self, dest_folder, proposed_name, source_path, reserved_paths):
-        source_key = os.path.normcase(os.path.abspath(source_path))
+            if copy_unreadable and not_found_files:
+                not_found_report_path = os.path.join(self.not_found_folder, NOT_FOUND_IMAGES_REPORT)
+                with open(not_found_report_path, "w", encoding="utf-8") as report:
+                    report.write("\n".join(not_found_files))
+
+            self.worker_events.put(("done", (renamed_count, total)))
+
+        except Exception:
+            self.worker_events.put(("cancelled", None))
+
+    def reserve_destination(self, dest_folder, proposed_name, reserved_paths):
         candidate = os.path.join(dest_folder, proposed_name)
         candidate_key = os.path.normcase(os.path.abspath(candidate))
-        if candidate_key == source_key:
-            return candidate, True
 
         stem, ext = os.path.splitext(proposed_name)
         suffix = 2
@@ -664,162 +561,7 @@ class ModernQRRenamer(ctk.CTk):
             suffix += 1
 
         reserved_paths.add(candidate_key)
-        return candidate, False
-
-    def show_preview(self, results):
-        if not results:
-            self.finish_with_error("Info", "No supported images or PDFs were found in the selected source.")
-            return
-
-        self.preview_items = results
-        ready_count = sum(item["eligible"] for item in results)
-        skipped_count = len(results) - ready_count
-        self.lbl_status.configure(text=f"Review results: {ready_count} ready, {skipped_count} skipped")
-
-        window = ctk.CTkToplevel(self)
-        self.preview_window = window
-        window.title("Review Rename Results")
-        window.geometry("900x720")
-        window.resizable(True, True)
-        window.configure(fg_color=BG_MAIN)
-        window.transient(self)
-        window.grab_set()
-        window.protocol("WM_DELETE_WINDOW", self.cancel_preview)
-
-        ctk.CTkLabel(
-            window, text="Review before renaming", font=("Segoe UI", 20, "bold"), text_color=TEXT_TITLE
-        ).pack(pady=(18, 4))
-        ctk.CTkLabel(
-            window,
-            text=(
-                f"{ready_count} files ready to rename; {skipped_count} skipped or already named."
-                f"\nResults folder: {self.result_folder}"
-                + (f"\nFiles without readable QR codes were listed in:\n{self.unreadable_report_path}" if self.unreadable_report_path else "")
-                + (f"\nUnreadable images copied to:\n{self.not_found_folder}\nList: {self.not_found_report_path}" if self.not_found_report_path else "")
-            ),
-            text_color=TEXT_MUTED,
-        ).pack(pady=(0, 12))
-
-        headers = ctk.CTkFrame(window, fg_color="transparent")
-        headers.pack(fill="x", padx=18)
-        for text, width in (("Rename", 65), ("Current file", 260), ("Proposed name", 300), ("Result", 210)):
-            ctk.CTkLabel(
-                headers, text=text, width=width, anchor="w", font=("Segoe UI", 12, "bold"), text_color=TEXT_TITLE
-            ).pack(side="left", padx=4)
-
-        rows = ctk.CTkScrollableFrame(window, height=360, fg_color=BG_CARD, corner_radius=12)
-        rows.pack(fill="both", expand=True, padx=18, pady=(4, 12))
-        for item in results:
-            row = ctk.CTkFrame(rows, fg_color="transparent")
-            row.pack(fill="x", padx=4, pady=3)
-            if item["eligible"]:
-                item["selected"] = ctk.BooleanVar(value=True)
-                ctk.CTkCheckBox(row, text="", variable=item["selected"], width=55).pack(side="left", padx=4)
-            else:
-                ctk.CTkLabel(row, text="-", width=55, anchor="w").pack(side="left", padx=4)
-            ctk.CTkLabel(row, text=item["filename"], width=260, anchor="w", wraplength=245).pack(side="left", padx=4)
-            ctk.CTkLabel(row, text=item["new_name"], width=300, anchor="w", wraplength=285).pack(side="left", padx=4)
-            ctk.CTkLabel(row, text=item["status"], width=210, anchor="w", wraplength=195).pack(side="left", padx=4)
-
-        actions = ctk.CTkFrame(window, fg_color="transparent")
-        actions.pack(fill="x", padx=18, pady=(0, 14))
-        ctk.CTkButton(
-            actions, text="Cancel", command=self.cancel_preview, fg_color=CANCEL_BTN, hover_color="#334155", corner_radius=7
-        ).pack(side="right", padx=(8, 0))
-        rename_button = ctk.CTkButton(
-            actions, text="Rename selected", command=self.apply_selected, fg_color=ACCENT_BLUE, hover_color=ACCENT_HOVER, corner_radius=8
-        )
-        rename_button.pack(side="right")
-        if ready_count == 0:
-            rename_button.configure(state="disabled")
-
-    def cancel_preview(self):
-        if self.preview_window is not None:
-            self.preview_window.grab_release()
-            self.preview_window.destroy()
-            self.preview_window = None
-        self.finish_with_error("", "Review cancelled.", show_dialog=False)
-
-    def apply_selected(self):
-        selected = [item for item in self.preview_items if item.get("selected") and item["selected"].get()]
-        if not selected:
-            messagebox.showwarning("No files selected", "Select at least one file to rename.")
-            return
-
-        if self.preview_window is not None:
-            self.preview_window.grab_release()
-            self.preview_window.destroy()
-            self.preview_window = None
-        self.cancel_requested.clear()
-        self.worker_active = True
-        self.btn_cancel.configure(state="normal")
-        self.lbl_status.configure(text="Applying selected names...")
-        threading.Thread(target=self.apply_renames, args=(selected,), daemon=True).start()
-
-    def apply_renames(self, selected):
-        renamed = 0
-        errors = []
-        total = len(selected)
-
-        for index, item in enumerate(selected, start=1):
-            if self.cancel_requested.is_set():
-                break
-            source_path = item["source_path"]
-            destination_path = item["destination_path"]
-            created_destination = False
-            try:
-                with open(source_path, "rb") as source, open(destination_path, "xb") as destination:
-                    created_destination = True
-                    shutil.copyfileobj(source, destination)
-                shutil.copystat(source_path, destination_path)
-                renamed += 1
-            except Exception as ex:
-                if created_destination and os.path.exists(destination_path):
-                    try:
-                        os.unlink(destination_path)
-                    except OSError as cleanup_error:
-                        errors.append(f"{item['filename']}: {ex}; could not remove incomplete target: {cleanup_error}")
-                        self.worker_events.put(("apply_progress", (index, total, item["filename"])))
-                        continue
-                errors.append(f"{item['filename']}: {ex}")
-
-            self.worker_events.put(("apply_progress", (index, total, item["filename"])))
-
-        self.worker_events.put(("apply_done", (renamed, total, errors, self.cancel_requested.is_set())))
-
-    def finish_apply(self, renamed, selected_count, errors, cancelled=False):
-        not_selected = sum(item["eligible"] for item in self.preview_items) - selected_count
-        self.btn_start.configure(state="normal", text="START PROCESS")
-        self.btn_cancel.configure(state="normal")
-        self.progress.set(0)
-        self.lbl_status.configure(text="Cancelled." if cancelled else f"Completed: {renamed} renamed")
-
-        details = f"Renamed {renamed} of {selected_count} selected files."
-        if cancelled:
-            details += "\nCancellation requested; no further files were processed."
-        if not_selected:
-            details += f"\nLeft unchanged: {not_selected} deselected file(s)."
-        if errors:
-            details += f"\nFailed: {len(errors)}"
-            details += "\n" + "\n".join(errors[:5])
-            if len(errors) > 5:
-                details += f"\nAnd {len(errors) - 5} more."
-        messagebox.showinfo("Rename complete", details)
-        self.preview_items = []
-
-    def finish_with_error(self, title, message, show_dialog=True):
-        self.worker_active = False
-        self.btn_start.configure(state="normal", text="START PROCESS")
-        self.btn_cancel.configure(state="normal")
-        self.copy_unreadable_checkbox.configure(state="normal")
-        self.progress.set(0)
-        self.lbl_status.configure(text=message if title else "Ready")
-        if show_dialog:
-            if title == "Info":
-                messagebox.showinfo(title, message)
-            else:
-                messagebox.showerror(title, message)
-        self.preview_items = []
+        return candidate
 
 
 if __name__ == "__main__":
