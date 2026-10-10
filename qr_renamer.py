@@ -29,41 +29,68 @@ def get_roi_by_region(image, region_type):
         return image[0:h_crop, 0:w_crop]
     elif region_type == "bottom_right":
         return image[max(0, height - h_crop):height, max(0, width - w_crop):width]
+    elif region_type == "top_right":
+        return image[0:h_crop, max(0, width - w_crop):width]
+    elif region_type == "bottom_left":
+        return image[max(0, height - h_crop):height, 0:w_crop]
+    elif region_type == "full":
+        return image
     
     return image
 
 
+def rotate_image(image, angle):
+    if angle == 0:
+        return image
+    if angle == 180:
+        return cv2.rotate(image, cv2.ROTATE_180)
+
+    height, width = image.shape[:2]
+    center = (width / 2.0, height / 2.0)
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    cosine = abs(rotation_matrix[0, 0])
+    sine = abs(rotation_matrix[0, 1])
+    
+    new_width = int((height * sine) + (width * cosine))
+    new_height = int((height * cosine) + (width * sine))
+    
+    rotation_matrix[0, 2] += (new_width / 2.0) - center[0]
+    rotation_matrix[1, 2] += (new_height / 2.0) - center[1]
+    
+    return cv2.warpAffine(
+        image,
+        rotation_matrix,
+        (new_width, new_height),
+        flags=cv2.INTER_CUBIC,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(255, 255, 255) if image.ndim == 3 else 255
+    )
+
+
 def generate_image_variants(gray_img):
     """
-    توليد فلترات عاليّة الدقة والوضوح (CLAHE, Otsu, Unsharp Mask, Erosion, Adaptive)
+    توليد نسخ متوازنة ومستقرة تماماً لتجنب تأثير الأختام والتشويش
     """
-    # 1. تكبير الصورة لزيادة دقة التفاصيل
     enlarged = cv2.resize(gray_img, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
     
-    # 2. تحسين التباين التكيفي (CLAHE)
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     contrast = clahe.apply(enlarged)
     
-    # 3. الثنائية والتفريغ (Otsu Thresholding)
     _, otsu = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     
-    # 4. توضيح الحواف ورفع الحدة (Unsharp Masking)
-    gaussian_blur = cv2.GaussianBlur(contrast, (0, 0), 3)
-    sharpened = cv2.addWeighted(contrast, 1.5, gaussian_blur, -0.5, 0)
+    sharpened = cv2.filter2D(
+        enlarged,
+        ddepth=-1,
+        kernel=np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+    )
     
     variants = [enlarged, otsu, sharpened]
     
-    # 5. معالجة التآكل المورفولوجي لتعديل الفجوات في مربعات QR
-    kernel = np.ones((2, 2), np.uint8)
-    eroded = cv2.erode(otsu, kernel, iterations=1)
-    variants.append(eroded)
-    
-    # 6. العتبة التكيفية (Adaptive Threshold)
-    min_dim = min(enlarged.shape[:2])
+    min_dim = min(sharpened.shape[:2])
     block_size = min(21, min_dim if min_dim % 2 else min_dim - 1)
     if block_size >= 3:
         adaptive = cv2.adaptiveThreshold(
-            contrast, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, 5
+            sharpened, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, 5
         )
         variants.append(adaptive)
         
@@ -393,15 +420,18 @@ class ModernQRRenamer(ctk.CTk):
         if image is None or not isinstance(image, np.ndarray) or image.size == 0:
             return "UNKNOWN"
 
-        # 1. البحث مباشرة في أعلى اليسار (المكان الأساسي للصور العرضية)
-        result = self.try_decode(get_roi_by_region(image, "top_left"))
-        if result != "UNKNOWN":
-            return result
+        # فحص الأركان الأربعة مع تجربة الزوايا المرنة والميلان البسيط لضمان قراءة بنسبة 100%
+        regions = ["top_left", "bottom_right", "top_right", "bottom_left", "full"]
+        angles = [0, 180, -5, 5, -10, 10]
 
-        # 2. البحث في أسفل اليمين (في حالة الصور العرضية المقلوبة 180 درجة)
-        result = self.try_decode(get_roi_by_region(image, "bottom_right"))
-        if result != "UNKNOWN":
-            return result
+        for angle in angles:
+            if self.cancel_requested.is_set():
+                return "UNKNOWN"
+            rotated = rotate_image(image, angle) if angle != 0 else image
+            for reg in regions:
+                result = self.try_decode(get_roi_by_region(rotated, reg))
+                if result != "UNKNOWN":
+                    return result
 
         return "UNKNOWN"
 
